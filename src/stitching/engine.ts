@@ -1,5 +1,6 @@
 import type { EmbObject, Point } from '../types';
-import { centroid, flattenPath, normalAt, resamplePath, rotatePoint, scanlineSpans } from './geometry';
+import { flattenPath, normalAt, resamplePath, tatamiRows } from './geometry';
+import { autoUnderlayType, fillUnderlay, satinUnderlay } from './underlay';
 
 export type Command = 'STITCH' | 'JUMP' | 'TRIM' | 'COLOR_CHANGE' | 'END';
 
@@ -19,13 +20,10 @@ function runningStitches(points: Point[], stitchLength: number, triple: boolean)
   return out;
 }
 
-function satinStitches(points: Point[], width: number, density: number, underlay: boolean): StitchPoint[] {
+function satinStitches(points: Point[], width: number, density: number, underlayPts: Point[]): StitchPoint[] {
   const sampled = resamplePath(points, Math.max(0.2, density));
   const out: StitchPoint[] = [];
-  if (underlay) {
-    // Simple centerline running-stitch pass to stabilize the fabric before the column.
-    for (const p of sampled) out.push({ x: p.x, y: p.y, command: 'STITCH' });
-  }
+  for (const p of underlayPts) out.push({ x: p.x, y: p.y, command: 'STITCH' });
   const half = width / 2;
   for (let i = 0; i < sampled.length; i++) {
     const n = normalAt(sampled, i);
@@ -44,44 +42,13 @@ function fillStitches(
   angle: number,
   rowSpacing: number,
   stitchLength: number,
-  underlay: boolean,
+  underlayPts: Point[],
 ): StitchPoint[] {
   if (polygon.length < 3) return [];
-  const c = centroid(polygon);
-  const rotated = polygon.map((p) => rotatePoint(p, c, -angle));
-  const ys = rotated.map((p) => p.y);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const spacing = Math.max(0.15, rowSpacing);
-  const stitchLen = Math.max(0.2, stitchLength);
-
   const out: StitchPoint[] = [];
-
-  if (underlay) {
-    // Perimeter walk stitch as a light underlay.
-    const closed = [...polygon, polygon[0]];
-    for (const p of closed) out.push({ x: p.x, y: p.y, command: 'STITCH' });
-  }
-
-  let rowIndex = 0;
-  for (let y = minY + spacing / 2; y < maxY; y += spacing) {
-    const xs = scanlineSpans(rotated, y);
-    for (let i = 0; i + 1 < xs.length; i += 2) {
-      const x0 = xs[i];
-      const x1 = xs[i + 1];
-      const leftToRight = rowIndex % 2 === 0;
-      const from = leftToRight ? x0 : x1;
-      const to = leftToRight ? x1 : x0;
-      const span = Math.abs(to - from);
-      const steps = Math.max(1, Math.round(span / stitchLen));
-      for (let s = 0; s <= steps; s++) {
-        const t = s / steps;
-        const rx = from + (to - from) * t;
-        const rp = rotatePoint({ x: rx, y }, c, angle);
-        out.push({ x: rp.x, y: rp.y, command: 'STITCH' });
-      }
-      rowIndex++;
-    }
+  for (const p of underlayPts) out.push({ x: p.x, y: p.y, command: 'STITCH' });
+  for (const p of tatamiRows(polygon, angle, rowSpacing, stitchLength)) {
+    out.push({ x: p.x, y: p.y, command: 'STITCH' });
   }
   return out;
 }
@@ -92,10 +59,16 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
   switch (obj.kind) {
     case 'running':
       return runningStitches(flat, obj.running.stitchLength, obj.running.triple);
-    case 'satin':
-      return satinStitches(flat, obj.satin.width, obj.satin.density, obj.satin.underlay);
-    case 'fill':
-      return fillStitches(flat, obj.fill.angle, obj.fill.rowSpacing, obj.fill.stitchLength, obj.fill.underlay);
+    case 'satin': {
+      const type = obj.satin.underlay.mode === 'auto' ? autoUnderlayType(obj) : obj.satin.underlay.type;
+      const underlayPts = satinUnderlay(flat, obj.satin.width, obj.satin.underlay, type);
+      return satinStitches(flat, obj.satin.width, obj.satin.density, underlayPts);
+    }
+    case 'fill': {
+      const type = obj.fill.underlay.mode === 'auto' ? autoUnderlayType(obj) : obj.fill.underlay.type;
+      const underlayPts = fillUnderlay(flat, obj.fill.angle, obj.fill.underlay, type);
+      return fillStitches(flat, obj.fill.angle, obj.fill.rowSpacing, obj.fill.stitchLength, underlayPts);
+    }
     default:
       return [];
   }

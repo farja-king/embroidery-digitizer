@@ -3,6 +3,7 @@ import { useStore, defaultObject } from '../state/store';
 import type { EmbObject, PathPoint, Point } from '../types';
 import { generateObjectStitches } from '../stitching/engine';
 import { distanceToPolyline, flattenPath, pointInPolygon } from '../stitching/geometry';
+import BackgroundControls from './BackgroundControls';
 
 const VERTEX_HIT_PX = 9;
 const OBJECT_HIT_PX = 8;
@@ -27,6 +28,9 @@ export default function Canvas() {
   const [showStitchPreview, setShowStitchPreview] = useState(false);
   const [drawingPoints, setDrawingPoints] = useState<PathPoint[] | null>(null);
   const [mousePos, setMousePos] = useState<Point | null>(null);
+  const [spaceDown, setSpaceDown] = useState(false);
+  const spaceDownRef = useRef(false);
+  const [bgImg, setBgImg] = useState<HTMLImageElement | null>(null);
   const dragRef = useRef<
     | { kind: 'pan'; startPx: Point; startPan: Point }
     | { kind: 'move-object'; id: string; startMm: Point; original: PathPoint[] }
@@ -34,6 +38,38 @@ export default function Canvas() {
     | { kind: 'rect'; corner: Point; ellipse: boolean }
     | null
   >(null);
+
+  // Space-bar pan, matching the hold-to-pan convention of the other in-house apps.
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || document.activeElement?.tagName === 'INPUT') return;
+      e.preventDefault(); // stop the page from scrolling
+      spaceDownRef.current = true;
+      setSpaceDown(true);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      spaceDownRef.current = false;
+      setSpaceDown(false);
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+    };
+  }, []);
+
+  // Load the background template image whenever its source changes.
+  useEffect(() => {
+    if (!doc.background?.src) {
+      setBgImg(null);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => setBgImg(img);
+    img.src = doc.background.src;
+  }, [doc.background?.src]);
 
   const toDesign = useCallback(
     (px: number, py: number): Point => ({
@@ -122,24 +158,28 @@ export default function Canvas() {
     const p = toDesign(px, py);
     (e.target as Element).setPointerCapture(e.pointerId);
 
-    if (e.button === 1 || tool === 'select') {
-      if (tool === 'select') {
-        const selected = doc.objects.find((o) => o.id === selectedId);
-        if (selected && !selected.locked) {
-          const vi = getVertexAt(p, selected);
-          if (vi >= 0) {
-            dragRef.current = { kind: 'move-vertex', id: selected.id, index: vi };
-            return;
-          }
-        }
-        const hit = getObjectAt(p);
-        if (hit) {
-          setSelectedId(hit.id);
-          if (!hit.locked) dragRef.current = { kind: 'move-object', id: hit.id, startMm: p, original: hit.points.map((pt) => ({ ...pt })) };
+    if (spaceDownRef.current || e.button === 1) {
+      dragRef.current = { kind: 'pan', startPx: { x: px, y: py }, startPan: { x: view.panX, y: view.panY } };
+      return;
+    }
+
+    if (tool === 'select') {
+      const selected = doc.objects.find((o) => o.id === selectedId);
+      if (selected && !selected.locked) {
+        const vi = getVertexAt(p, selected);
+        if (vi >= 0) {
+          dragRef.current = { kind: 'move-vertex', id: selected.id, index: vi };
           return;
         }
-        setSelectedId(null);
       }
+      const hit = getObjectAt(p);
+      if (hit) {
+        setSelectedId(hit.id);
+        if (!hit.locked) dragRef.current = { kind: 'move-object', id: hit.id, startMm: p, original: hit.points.map((pt) => ({ ...pt })) };
+        return;
+      }
+      setSelectedId(null);
+      // empty space in select mode: drag to pan, same as holding Space
       dragRef.current = { kind: 'pan', startPx: { x: px, y: py }, startPan: { x: view.panX, y: view.panY } };
       return;
     }
@@ -212,10 +252,13 @@ export default function Canvas() {
           setSelectedId(null);
         }
       }
+      if ((e.key === 'd' || e.key === 'D') && document.activeElement?.tagName !== 'INPUT') {
+        dispatch({ type: 'UPDATE_BACKGROUND', patch: { visible: !doc.background?.visible } });
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [finishDrawing, selectedId, dispatch, setSelectedId]);
+  }, [finishDrawing, selectedId, dispatch, setSelectedId, doc.background?.visible]);
 
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
@@ -247,7 +290,7 @@ export default function Canvas() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    // background
+    // canvas backdrop
     ctx.fillStyle = '#eeeae0';
     ctx.fillRect(0, 0, w, h);
 
@@ -260,6 +303,16 @@ export default function Canvas() {
     ctx.strokeStyle = '#b9b2a3';
     ctx.lineWidth = 1;
     ctx.strokeRect(topLeft.x, topLeft.y, hw * view.scale, hh * view.scale);
+
+    // background template image (traced over, toggled with D)
+    if (doc.background?.visible && bgImg) {
+      const bg = doc.background;
+      const bgTopLeft = toScreen({ x: bg.x - bg.width / 2, y: bg.y - bg.height / 2 });
+      ctx.save();
+      ctx.globalAlpha = bg.opacity;
+      ctx.drawImage(bgImg, bgTopLeft.x, bgTopLeft.y, bg.width * view.scale, bg.height * view.scale);
+      ctx.restore();
+    }
 
     // center crosshair
     const center = toScreen({ x: 0, y: 0 });
@@ -297,12 +350,15 @@ export default function Canvas() {
       ctx.setLineDash([]);
       for (const p of drawingPoints) drawVertexMarker(ctx, toScreen(p), p.type, '#2f6fed', '#2f6fed');
     }
-  }, [doc, view, size, selectedId, showStitchPreview, drawingPoints, mousePos, toScreen]);
+  }, [doc, view, size, selectedId, showStitchPreview, drawingPoints, mousePos, toScreen, bgImg]);
+
+  const cursor = spaceDown ? (dragRef.current?.kind === 'pan' ? 'grabbing' : 'grab') : undefined;
 
   return (
     <div className="canvas-wrap" ref={containerRef}>
       <canvas
         ref={canvasRef}
+        style={cursor ? { cursor } : undefined}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -311,13 +367,16 @@ export default function Canvas() {
         onContextMenu={(e) => e.preventDefault()}
       />
       <div className="canvas-hint">
-        {tool === 'select'
-          ? 'Click to select · drag to move · Delete to remove'
-          : tool === 'rect' || tool === 'ellipse'
-            ? 'Drag to draw the shape · hold Shift to keep it square/circular'
-            : 'Left-click = corner point (▪) · right-click = curve point (●) · double-click or Enter to finish · Esc to cancel'}
+        {spaceDown
+          ? 'Drag to pan'
+          : tool === 'select'
+            ? 'Click to select · drag to move · Delete to remove · hold Space to pan'
+            : tool === 'rect' || tool === 'ellipse'
+              ? 'Drag to draw the shape · hold Shift to keep it square/circular'
+              : 'Left-click = corner point (▪) · right-click = curve point (●) · double-click or Enter to finish · Esc to cancel'}
       </div>
       <div className="canvas-controls">
+        <BackgroundControls />
         <label>
           <input type="checkbox" checked={showStitchPreview} onChange={(e) => setShowStitchPreview(e.target.checked)} />
           Stitch preview

@@ -1,5 +1,66 @@
 import { useStore } from '../state/store';
-import type { EmbObject } from '../types';
+import type { EmbObject, UnderlaySettings, UnderlayType } from '../types';
+import { autoUnderlayType } from '../stitching/underlay';
+
+const UNDERLAY_LABELS: Record<UnderlayType, string> = {
+  none: 'None',
+  'center-run': 'Center run',
+  'edge-run': 'Edge run',
+  zigzag: 'Zigzag',
+  'double-zigzag': 'Double zigzag',
+  tatami: 'Tatami',
+};
+
+function UnderlayField({
+  obj,
+  underlay,
+  onChange,
+}: {
+  obj: EmbObject;
+  underlay: UnderlaySettings;
+  onChange: (u: UnderlaySettings) => void;
+}) {
+  const autoType = autoUnderlayType(obj);
+  return (
+    <div className="underlay-field">
+      <div className="field-label">Underlay</div>
+      <div className="underlay-mode-toggle">
+        <button className={underlay.mode === 'auto' ? 'active' : ''} onClick={() => onChange({ ...underlay, mode: 'auto' })}>
+          Auto
+        </button>
+        <button className={underlay.mode === 'manual' ? 'active' : ''} onClick={() => onChange({ ...underlay, mode: 'manual' })}>
+          Manual
+        </button>
+      </div>
+      {underlay.mode === 'auto' ? (
+        <p className="muted underlay-auto-note">Using {UNDERLAY_LABELS[autoType]} based on this shape's size.</p>
+      ) : (
+        <>
+          <label className="field">
+            Type
+            <select value={underlay.type} onChange={(e) => onChange({ ...underlay, type: e.target.value as UnderlayType })}>
+              {(Object.keys(UNDERLAY_LABELS) as UnderlayType[]).map((t) => (
+                <option key={t} value={t}>
+                  {UNDERLAY_LABELS[t]}
+                </option>
+              ))}
+            </select>
+          </label>
+          {underlay.type !== 'none' && (
+            <NumberField
+              label="Spacing (mm)"
+              value={underlay.spacing}
+              min={0.5}
+              max={6}
+              step={0.1}
+              onChange={(v) => onChange({ ...underlay, spacing: v })}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function rgbToHex(c: { r: number; g: number; b: number }): string {
   return '#' + [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, '0')).join('');
@@ -75,14 +136,7 @@ export default function PropertiesPanel() {
             step={0.1}
             onChange={(v) => update({ satin: { ...obj.satin, density: v } })}
           />
-          <label className="field row">
-            <input
-              type="checkbox"
-              checked={obj.satin.underlay}
-              onChange={(e) => update({ satin: { ...obj.satin, underlay: e.target.checked } })}
-            />
-            Center-walk underlay
-          </label>
+          <UnderlayField obj={obj} underlay={obj.satin.underlay} onChange={(underlay) => update({ satin: { ...obj.satin, underlay } })} />
         </>
       )}
 
@@ -112,14 +166,7 @@ export default function PropertiesPanel() {
             step={0.1}
             onChange={(v) => update({ fill: { ...obj.fill, stitchLength: v } })}
           />
-          <label className="field row">
-            <input
-              type="checkbox"
-              checked={obj.fill.underlay}
-              onChange={(e) => update({ fill: { ...obj.fill, underlay: e.target.checked } })}
-            />
-            Perimeter underlay
-          </label>
+          <UnderlayField obj={obj} underlay={obj.fill.underlay} onChange={(underlay) => update({ fill: { ...obj.fill, underlay } })} />
         </>
       )}
     </div>

@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useReducer, useState, type ReactNode } from 'react';
-import type { Document, EmbObject, HoopSize, PathPoint, RGB, StitchKind, ToolId } from '../types';
-import { HOOP_PRESETS } from '../types';
+import type { BackgroundImage, Document, EmbObject, HoopSize, PathPoint, RGB, StitchKind, ToolId } from '../types';
+import { HOOP_PRESETS, defaultUnderlay } from '../types';
 
 function makeId(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -16,8 +16,8 @@ export function defaultObject(kind: StitchKind, points: PathPoint[], color: RGB)
     visible: true,
     locked: false,
     running: { stitchLength: 2.5, triple: false },
-    satin: { width: 3, density: 0.4, underlay: true },
-    fill: { angle: 0, rowSpacing: 0.4, stitchLength: 3, underlay: true },
+    satin: { width: 3, density: 0.4, underlay: defaultUnderlay('zigzag') },
+    fill: { angle: 0, rowSpacing: 0.4, stitchLength: 3, underlay: defaultUnderlay('tatami') },
   };
 }
 
@@ -25,6 +25,7 @@ const initialDocument: Document = {
   name: 'Untitled Design',
   hoop: HOOP_PRESETS[0],
   objects: [],
+  background: null,
 };
 
 type Action =
@@ -34,6 +35,8 @@ type Action =
   | { type: 'REORDER'; fromIndex: number; toIndex: number }
   | { type: 'SET_HOOP'; hoop: HoopSize }
   | { type: 'SET_NAME'; name: string }
+  | { type: 'SET_BACKGROUND'; background: BackgroundImage | null }
+  | { type: 'UPDATE_BACKGROUND'; patch: Partial<BackgroundImage> }
   | { type: 'LOAD_DOCUMENT'; document: Document }
   | { type: 'CLEAR' };
 
@@ -58,8 +61,12 @@ function reducer(state: Document, action: Action): Document {
       return { ...state, hoop: action.hoop };
     case 'SET_NAME':
       return { ...state, name: action.name };
+    case 'SET_BACKGROUND':
+      return { ...state, background: action.background };
+    case 'UPDATE_BACKGROUND':
+      return { ...state, background: state.background ? { ...state.background, ...action.patch } : state.background };
     case 'LOAD_DOCUMENT':
-      return action.document;
+      return { ...action.document, background: action.document.background ?? null };
     case 'CLEAR':
       return { ...initialDocument, objects: [] };
     default:
@@ -85,7 +92,10 @@ const STORAGE_KEY = 'embroidery-digitizer-doc';
 function loadInitial(): Document {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as Document;
+    if (raw) {
+      const parsed = JSON.parse(raw) as Document;
+      return { ...parsed, background: parsed.background ?? null };
+    }
   } catch {
     // ignore corrupt/unavailable storage
   }

@@ -28,17 +28,33 @@ export interface RunningParams {
   triple: boolean; // stitch each segment 3x (hand-look / bartack style reinforcement)
 }
 
+// 'none' disables underlay entirely. The rest name a real digitizing underlay pattern —
+// see stitching/underlay.ts for what each one actually generates.
+export type UnderlayType = 'none' | 'center-run' | 'edge-run' | 'zigzag' | 'double-zigzag' | 'tatami';
+
+export interface UnderlaySettings {
+  // 'auto' picks a type + spacing from the object's own width/area (see stitching/underlay.ts
+  // autoUnderlayType); 'manual' uses `type`/`spacing` below as set by the user.
+  mode: 'auto' | 'manual';
+  type: UnderlayType;
+  spacing: number; // mm; row spacing (tatami/zigzag) or stitch length (run types)
+}
+
+export function defaultUnderlay(type: UnderlayType = 'none'): UnderlaySettings {
+  return { mode: 'auto', type, spacing: 2.5 };
+}
+
 export interface SatinParams {
   width: number; // mm, rail-to-rail
   density: number; // mm between zigzag stitches along the path
-  underlay: boolean;
+  underlay: UnderlaySettings;
 }
 
 export interface FillParams {
   angle: number; // degrees, scan-line direction
   rowSpacing: number; // mm between rows
   stitchLength: number; // mm along each row
-  underlay: boolean;
+  underlay: UnderlaySettings;
 }
 
 export interface EmbObject {
@@ -68,8 +84,19 @@ export const HOOP_PRESETS: HoopSize[] = [
   { name: '9x9"', width: 240, height: 240 },
 ];
 
+export interface BackgroundImage {
+  src: string; // data URL
+  x: number; // mm, design-space center
+  y: number; // mm, design-space center
+  width: number; // mm
+  height: number; // mm
+  opacity: number; // 0..1
+  visible: boolean; // toggled with the D key
+}
+
 export interface Document {
   name: string;
   hoop: HoopSize;
   objects: EmbObject[];
+  background: BackgroundImage | null;
 }

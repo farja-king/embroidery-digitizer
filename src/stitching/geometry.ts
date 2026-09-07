@@ -184,3 +184,39 @@ export function scanlineSpans(polygon: Point[], rowY: number): number[] {
   xs.sort((a, b) => a - b);
   return xs;
 }
+
+/** Boustrophedon (snake-pattern) scan-line tatami fill of a polygon at a given angle —
+ * the shared row-generation core used both for a fill object's top stitching and for
+ * a tatami underlay pass underneath it (at a different angle/spacing). */
+export function tatamiRows(polygon: Point[], angle: number, rowSpacing: number, stitchLength: number): Point[] {
+  if (polygon.length < 3) return [];
+  const c = centroid(polygon);
+  const rotated = polygon.map((p) => rotatePoint(p, c, -angle));
+  const ys = rotated.map((p) => p.y);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const spacing = Math.max(0.15, rowSpacing);
+  const stitchLen = Math.max(0.2, stitchLength);
+
+  const out: Point[] = [];
+  let rowIndex = 0;
+  for (let y = minY + spacing / 2; y < maxY; y += spacing) {
+    const xs = scanlineSpans(rotated, y);
+    for (let i = 0; i + 1 < xs.length; i += 2) {
+      const x0 = xs[i];
+      const x1 = xs[i + 1];
+      const leftToRight = rowIndex % 2 === 0;
+      const from = leftToRight ? x0 : x1;
+      const to = leftToRight ? x1 : x0;
+      const span = Math.abs(to - from);
+      const steps = Math.max(1, Math.round(span / stitchLen));
+      for (let s = 0; s <= steps; s++) {
+        const t = s / steps;
+        const rx = from + (to - from) * t;
+        out.push(rotatePoint({ x: rx, y }, c, angle));
+      }
+      rowIndex++;
+    }
+  }
+  return out;
+}

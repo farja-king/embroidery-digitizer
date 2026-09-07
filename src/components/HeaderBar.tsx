@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import { HOOP_PRESETS, type Document } from '../types';
 import { exportStitchFile, type ExportFormat } from '../formats/exportPattern';
+import StitchPlayback from './StitchPlayback';
 
 const FORMATS: { id: ExportFormat; label: string }[] = [
   { id: 'dst', label: '.DST — Tajima (universal)' },
@@ -16,6 +17,7 @@ export default function HeaderBar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [showEmbNote, setShowEmbNote] = useState(false);
+  const [showPlayback, setShowPlayback] = useState(false);
 
   const doExport = (format: ExportFormat) => {
     setExportError(null);
@@ -75,6 +77,9 @@ export default function HeaderBar() {
 
       <div className="spacer" />
 
+      <button className="preview-btn" onClick={() => setShowPlayback(true)}>
+        ▶ Preview stitch-out
+      </button>
       <button onClick={saveProject}>Save project</button>
       <button onClick={() => fileInputRef.current?.click()}>Open project</button>
       <input
@@ -123,6 +128,8 @@ export default function HeaderBar() {
           </div>
         </div>
       )}
+
+      {showPlayback && <StitchPlayback onClose={() => setShowPlayback(false)} />}
     </div>
   );
 }
