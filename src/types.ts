@@ -5,6 +5,15 @@ export interface Point {
   y: number;
 }
 
+export type PointType = 'corner' | 'curve';
+
+// A path/polygon vertex: 'corner' draws a straight line into and out of it (square
+// handle in the editor); 'curve' makes the path smooth through it (circle handle),
+// via a Catmull-Rom-derived curve using its neighbors.
+export interface PathPoint extends Point {
+  type: PointType;
+}
+
 export interface RGB {
   r: number;
   g: number;
@@ -36,7 +45,7 @@ export interface EmbObject {
   id: string;
   kind: StitchKind;
   name: string;
-  points: Point[]; // design-space mm; open path for running/satin centerline, closed polygon for fill
+  points: PathPoint[]; // design-space mm; open path for running/satin centerline, closed polygon for fill
   color: RGB;
   visible: boolean;
   locked: boolean;

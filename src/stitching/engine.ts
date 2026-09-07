@@ -1,5 +1,5 @@
 import type { EmbObject, Point } from '../types';
-import { centroid, normalAt, resamplePath, rotatePoint, scanlineSpans } from './geometry';
+import { centroid, flattenPath, normalAt, resamplePath, rotatePoint, scanlineSpans } from './geometry';
 
 export type Command = 'STITCH' | 'JUMP' | 'TRIM' | 'COLOR_CHANGE' | 'END';
 
@@ -88,19 +88,14 @@ function fillStitches(
 
 export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
   if (!obj.visible || obj.points.length < 2) return [];
+  const flat = flattenPath(obj.points, obj.kind === 'fill');
   switch (obj.kind) {
     case 'running':
-      return runningStitches(obj.points, obj.running.stitchLength, obj.running.triple);
+      return runningStitches(flat, obj.running.stitchLength, obj.running.triple);
     case 'satin':
-      return satinStitches(obj.points, obj.satin.width, obj.satin.density, obj.satin.underlay);
+      return satinStitches(flat, obj.satin.width, obj.satin.density, obj.satin.underlay);
     case 'fill':
-      return fillStitches(
-        obj.points,
-        obj.fill.angle,
-        obj.fill.rowSpacing,
-        obj.fill.stitchLength,
-        obj.fill.underlay,
-      );
+      return fillStitches(flat, obj.fill.angle, obj.fill.rowSpacing, obj.fill.stitchLength, obj.fill.underlay);
     default:
       return [];
   }
@@ -112,6 +107,27 @@ export interface BuiltPattern {
 }
 
 const MAX_STITCH_MM = 12.1; // ~121 units of 0.1mm, the tightest ceiling among the four formats (DST/EXP)
+
+/** Center of the STITCH-only bounding box across all objects, in design-space mm —
+ * mirrors toMachinePattern's centering exactly, so the initial jump (below) is
+ * measured against the same point that becomes (0,0) in the exported file. */
+function contentCenter(perObjectStitches: Map<string, StitchPoint[]>, objects: EmbObject[]): Point | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const obj of objects) {
+    for (const s of perObjectStitches.get(obj.id) ?? []) {
+      if (s.command !== 'STITCH') continue;
+      minX = Math.min(minX, s.x);
+      maxX = Math.max(maxX, s.x);
+      minY = Math.min(minY, s.y);
+      maxY = Math.max(maxY, s.y);
+    }
+  }
+  if (minX === Infinity) return null;
+  return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+}
 
 function splitLongJump(from: Point, to: Point): Point[] {
   const d = Math.hypot(to.x - from.x, to.y - from.y);
@@ -129,17 +145,23 @@ function splitLongJump(from: Point, to: Point): Point[] {
  * JUMP between disconnected objects, TRIM when the jump is long, and COLOR_CHANGE
  * whenever consecutive objects use a different thread color. */
 export function buildPattern(objects: EmbObject[]): BuiltPattern {
-  const visible = objects.filter((o) => o.visible && o.points.length >= 2);
+  const visible = objects.filter((o) => o.points.length >= 2 && o.visible);
+  const perObjectStitches = new Map<string, StitchPoint[]>();
+  for (const obj of visible) perObjectStitches.set(obj.id, generateObjectStitches(obj));
+
+  // toMachinePattern later centers the whole design on its STITCH-only bounding box,
+  // which becomes (0,0) in the exported file. The machine "starts" there too, so the
+  // very first jump must be measured against that same point — not design-space (0,0),
+  // which centering shifts away from (0,0) in the final file.
+  let cursor: Point = contentCenter(perObjectStitches, visible) ?? { x: 0, y: 0 };
+
   const stitches: StitchPoint[] = [];
   const threads: { r: number; g: number; b: number }[] = [];
-  // The machine always starts at (0,0); the very first object needs a JUMP to
-  // reach it too, same as every jump between objects after it.
-  let cursor: Point = { x: 0, y: 0 };
   let started = false;
   let lastColorKey = '';
 
   for (const obj of visible) {
-    const objStitches = generateObjectStitches(obj);
+    const objStitches = perObjectStitches.get(obj.id)!;
     if (objStitches.length === 0) continue;
 
     const colorKey = `${obj.color.r},${obj.color.g},${obj.color.b}`;

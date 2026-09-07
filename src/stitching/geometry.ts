@@ -1,4 +1,54 @@
-import type { Point } from '../types';
+import type { PathPoint, Point } from '../types';
+
+/**
+ * Turns sparse corner/curve control points into a dense straight-segment polyline,
+ * so every downstream consumer (stitch generators, hit-testing, rendering) can keep
+ * working with plain polylines. A 'curve' point is smoothed through via a
+ * Catmull-Rom-derived cubic Bezier using its neighbors; a 'corner' point pins the
+ * adjacent Bezier control handle to itself, producing a straight line into/out of it.
+ * Runs of all-corner points are returned as-is (no curve sampling needed).
+ */
+export function flattenPath(points: PathPoint[], closed: boolean): Point[] {
+  const n = points.length;
+  if (n < 2) return points.map((p) => ({ x: p.x, y: p.y }));
+  if (points.every((p) => p.type !== 'curve')) return points.map((p) => ({ x: p.x, y: p.y }));
+
+  const SAMPLES = 16;
+  const segCount = closed ? n : n - 1;
+  const out: Point[] = [{ x: points[0].x, y: points[0].y }];
+
+  for (let i = 0; i < segCount; i++) {
+    const p1 = points[i];
+    const p2 = points[(i + 1) % n];
+    const p0 = closed ? points[(i - 1 + n) % n] : points[Math.max(0, i - 1)];
+    const p3 = closed ? points[(i + 2) % n] : points[Math.min(n - 1, i + 2)];
+
+    if (p1.type !== 'curve' && p2.type !== 'curve') {
+      out.push({ x: p2.x, y: p2.y });
+      continue;
+    }
+
+    const c1 = p1.type === 'curve' ? { x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6 } : p1;
+    const c2 = p2.type === 'curve' ? { x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6 } : p2;
+
+    for (let s = 1; s <= SAMPLES; s++) {
+      out.push(cubicBezierAt(p1, c1, c2, p2, s / SAMPLES));
+    }
+  }
+  return out;
+}
+
+function cubicBezierAt(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
+  const mt = 1 - t;
+  const a = mt * mt * mt;
+  const b = 3 * mt * mt * t;
+  const c = 3 * mt * t * t;
+  const d = t * t * t;
+  return {
+    x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+    y: a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+  };
+}
 
 export function dist(a: Point, b: Point): number {
   return Math.hypot(b.x - a.x, b.y - a.y);
@@ -11,23 +61,26 @@ export function pathLength(points: Point[]): number {
 }
 
 /** Resample an open polyline at fixed arc-length steps. Always includes the first
- * and last point of the original path. */
+ * and last point of the original path. Works with any mix of segment lengths —
+ * in particular the many short segments a flattened curve is made of, where
+ * several segments in a row can be consumed before a single step is used up. */
 export function resamplePath(points: Point[], step: number): Point[] {
   if (points.length < 2 || step <= 0) return points.slice();
   const out: Point[] = [points[0]];
-  let carry = 0;
+  let accumulated = 0; // distance walked since the last emitted point
   for (let i = 1; i < points.length; i++) {
     const a = points[i - 1];
     const b = points[i];
     const segLen = dist(a, b);
     if (segLen === 0) continue;
-    let travelled = carry;
-    while (travelled + step <= segLen) {
-      travelled += step;
-      const t = travelled / segLen;
+    let segPos = 0; // distance consumed so far within this segment
+    while (accumulated + (segLen - segPos) >= step) {
+      segPos += step - accumulated;
+      const t = segPos / segLen;
       out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+      accumulated = 0;
     }
-    carry = step - (segLen - travelled); // overshoot carried into next segment
+    accumulated += segLen - segPos;
   }
   const last = points[points.length - 1];
   const prevOut = out[out.length - 1];

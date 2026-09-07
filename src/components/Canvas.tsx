@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore, defaultObject } from '../state/store';
-import type { EmbObject, Point } from '../types';
+import type { EmbObject, PathPoint, Point } from '../types';
 import { generateObjectStitches } from '../stitching/engine';
-import { distanceToPolyline, pointInPolygon } from '../stitching/geometry';
+import { distanceToPolyline, flattenPath, pointInPolygon } from '../stitching/geometry';
 
 const VERTEX_HIT_PX = 9;
 const OBJECT_HIT_PX = 8;
@@ -25,11 +25,11 @@ export default function Canvas() {
   const [size, setSize] = useState({ w: 0, h: 0 });
   const centeredRef = useRef(false);
   const [showStitchPreview, setShowStitchPreview] = useState(false);
-  const [drawingPoints, setDrawingPoints] = useState<Point[] | null>(null);
+  const [drawingPoints, setDrawingPoints] = useState<PathPoint[] | null>(null);
   const [mousePos, setMousePos] = useState<Point | null>(null);
   const dragRef = useRef<
     | { kind: 'pan'; startPx: Point; startPan: Point }
-    | { kind: 'move-object'; id: string; startMm: Point; original: Point[] }
+    | { kind: 'move-object'; id: string; startMm: Point; original: PathPoint[] }
     | { kind: 'move-vertex'; id: string; index: number }
     | { kind: 'rect'; corner: Point; ellipse: boolean }
     | null
@@ -76,12 +76,14 @@ export default function Canvas() {
       for (let i = doc.objects.length - 1; i >= 0; i--) {
         const o = doc.objects[i];
         if (!o.visible || o.locked) continue;
+        const closed = o.kind === 'fill';
+        const flat = flattenPath(o.points, closed);
         if (o.kind === 'fill') {
-          if (pointInPolygon(p, o.points)) return o;
-          if (distanceToPolyline(p, o.points, true) < OBJECT_HIT_PX / view.scale) return o;
+          if (pointInPolygon(p, flat)) return o;
+          if (distanceToPolyline(p, flat, true) < OBJECT_HIT_PX / view.scale) return o;
         } else {
           const threshold = Math.max(OBJECT_HIT_PX / view.scale, o.kind === 'satin' ? o.satin.width / 2 : 0);
-          if (distanceToPolyline(p, o.points, false) < threshold) return o;
+          if (distanceToPolyline(p, flat, false) < threshold) return o;
         }
       }
       return null;
@@ -147,8 +149,10 @@ export default function Canvas() {
       return;
     }
 
-    // running / satin / fill: click-to-place-vertex polyline drawing
-    setDrawingPoints((prev) => (prev ? [...prev, p] : [p]));
+    // running / satin / fill: click-to-place-vertex polyline drawing.
+    // Left click = corner (straight, square handle); right click = curve (smooth, circle handle).
+    const pt: PathPoint = { ...p, type: e.button === 2 ? 'curve' : 'corner' };
+    setDrawingPoints((prev) => (prev ? [...prev, pt] : [pt]));
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -165,15 +169,20 @@ export default function Canvas() {
     } else if (drag.kind === 'move-object') {
       const dx = p.x - drag.startMm.x;
       const dy = p.y - drag.startMm.y;
-      dispatch({ type: 'UPDATE_OBJECT', id: drag.id, patch: { points: drag.original.map((pt) => ({ x: pt.x + dx, y: pt.y + dy })) } });
+      dispatch({
+        type: 'UPDATE_OBJECT',
+        id: drag.id,
+        patch: { points: drag.original.map((pt) => ({ x: pt.x + dx, y: pt.y + dy, type: pt.type })) },
+      });
     } else if (drag.kind === 'move-vertex') {
       const obj = doc.objects.find((o) => o.id === drag.id);
       if (obj) {
-        const pts = obj.points.map((pt, i) => (i === drag.index ? p : pt));
+        const pts = obj.points.map((pt, i) => (i === drag.index ? { ...p, type: pt.type } : pt));
         dispatch({ type: 'UPDATE_OBJECT', id: drag.id, patch: { points: pts } });
       }
     } else if (drag.kind === 'rect') {
-      setDrawingPoints(rectPoints(drag.corner, p, drag.ellipse));
+      const target = e.shiftKey ? constrainToSquare(drag.corner, p) : p;
+      setDrawingPoints(rectPoints(drag.corner, target, drag.ellipse));
     }
   };
 
@@ -268,29 +277,25 @@ export default function Canvas() {
     }
 
     if (drawingPoints && drawingPoints.length > 0) {
+      const withCursor: PathPoint[] =
+        mousePos && tool !== 'rect' && tool !== 'ellipse'
+          ? [...drawingPoints, { ...mousePos, type: 'corner' }]
+          : drawingPoints;
+      const flat = flattenPath(withCursor, false);
       ctx.strokeStyle = '#2f6fed';
       ctx.fillStyle = '#2f6fed';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 3]);
       ctx.beginPath();
-      const first = toScreen(drawingPoints[0]);
+      const first = toScreen(flat[0]);
       ctx.moveTo(first.x, first.y);
-      for (let i = 1; i < drawingPoints.length; i++) {
-        const s = toScreen(drawingPoints[i]);
-        ctx.lineTo(s.x, s.y);
-      }
-      if (mousePos && tool !== 'rect' && tool !== 'ellipse') {
-        const s = toScreen(mousePos);
+      for (let i = 1; i < flat.length; i++) {
+        const s = toScreen(flat[i]);
         ctx.lineTo(s.x, s.y);
       }
       ctx.stroke();
       ctx.setLineDash([]);
-      for (const p of drawingPoints) {
-        const s = toScreen(p);
-        ctx.beginPath();
-        ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
-        ctx.fill();
-      }
+      for (const p of drawingPoints) drawVertexMarker(ctx, toScreen(p), p.type, '#2f6fed', '#2f6fed');
     }
   }, [doc, view, size, selectedId, showStitchPreview, drawingPoints, mousePos, toScreen]);
 
@@ -309,8 +314,8 @@ export default function Canvas() {
         {tool === 'select'
           ? 'Click to select · drag to move · Delete to remove'
           : tool === 'rect' || tool === 'ellipse'
-            ? 'Drag to draw the shape'
-            : 'Click to add points · double-click or Enter to finish · Esc to cancel'}
+            ? 'Drag to draw the shape · hold Shift to keep it square/circular'
+            : 'Left-click = corner point (▪) · right-click = curve point (●) · double-click or Enter to finish · Esc to cancel'}
       </div>
       <div className="canvas-controls">
         <label>
@@ -327,26 +332,49 @@ export default function Canvas() {
   );
 }
 
-function rectPoints(a: Point, b: Point, ellipse: boolean): Point[] {
+/** Anchors the drag at `a` and forces `b` so the box is a square (shift-constrain). */
+function constrainToSquare(a: Point, b: Point): Point {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const size = Math.max(Math.abs(dx), Math.abs(dy));
+  return { x: a.x + (dx < 0 ? -size : size), y: a.y + (dy < 0 ? -size : size) };
+}
+
+function rectPoints(a: Point, b: Point, ellipse: boolean): PathPoint[] {
   if (!ellipse) {
     return [
-      { x: a.x, y: a.y },
-      { x: b.x, y: a.y },
-      { x: b.x, y: b.y },
-      { x: a.x, y: b.y },
+      { x: a.x, y: a.y, type: 'corner' },
+      { x: b.x, y: a.y, type: 'corner' },
+      { x: b.x, y: b.y, type: 'corner' },
+      { x: a.x, y: b.y, type: 'corner' },
     ];
   }
   const cx = (a.x + b.x) / 2;
   const cy = (a.y + b.y) / 2;
   const rx = Math.abs(b.x - a.x) / 2;
   const ry = Math.abs(b.y - a.y) / 2;
-  const pts: Point[] = [];
+  const pts: PathPoint[] = [];
   const N = 40;
   for (let i = 0; i < N; i++) {
     const t = (i / N) * Math.PI * 2;
-    pts.push({ x: cx + Math.cos(t) * rx, y: cy + Math.sin(t) * ry });
+    pts.push({ x: cx + Math.cos(t) * rx, y: cy + Math.sin(t) * ry, type: 'curve' });
   }
   return pts;
+}
+
+function drawVertexMarker(ctx: CanvasRenderingContext2D, s: Point, type: 'corner' | 'curve', fill: string, stroke: string) {
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  if (type === 'curve') {
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    if (stroke !== fill) ctx.stroke();
+  } else {
+    const r = 4;
+    ctx.fillRect(s.x - r, s.y - r, r * 2, r * 2);
+    if (stroke !== fill) ctx.strokeRect(s.x - r, s.y - r, r * 2, r * 2);
+  }
 }
 
 function drawObject(
@@ -374,11 +402,12 @@ function drawObject(
       ctx.stroke();
     }
   } else if (obj.kind === 'fill') {
+    const flat = flattenPath(obj.points, true);
     ctx.beginPath();
-    const first = toScreen(obj.points[0]);
+    const first = toScreen(flat[0]);
     ctx.moveTo(first.x, first.y);
-    for (let i = 1; i < obj.points.length; i++) {
-      const s = toScreen(obj.points[i]);
+    for (let i = 1; i < flat.length; i++) {
+      const s = toScreen(flat[i]);
       ctx.lineTo(s.x, s.y);
     }
     ctx.closePath();
@@ -390,16 +419,17 @@ function drawObject(
     ctx.lineWidth = 1.5;
     ctx.stroke();
   } else {
+    const flat = flattenPath(obj.points, false);
     ctx.strokeStyle = color;
     ctx.lineWidth = obj.kind === 'satin' ? Math.max(2, obj.satin.width * scale) : 2;
     ctx.globalAlpha = obj.kind === 'satin' ? 0.5 : 1;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.beginPath();
-    const first = toScreen(obj.points[0]);
+    const first = toScreen(flat[0]);
     ctx.moveTo(first.x, first.y);
-    for (let i = 1; i < obj.points.length; i++) {
-      const s = toScreen(obj.points[i]);
+    for (let i = 1; i < flat.length; i++) {
+      const s = toScreen(flat[i]);
       ctx.lineTo(s.x, s.y);
     }
     ctx.stroke();
@@ -412,15 +442,6 @@ function drawObject(
   }
 
   if (selected) {
-    ctx.fillStyle = '#2f6fed';
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 1.5;
-    for (const p of obj.points) {
-      const s = toScreen(p);
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, 4.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    }
+    for (const p of obj.points) drawVertexMarker(ctx, toScreen(p), p.type, '#2f6fed', '#ffffff');
   }
 }

@@ -1,12 +1,12 @@
 import { createContext, useContext, useEffect, useReducer, useState, type ReactNode } from 'react';
-import type { Document, EmbObject, HoopSize, Point, RGB, StitchKind, ToolId } from '../types';
+import type { Document, EmbObject, HoopSize, PathPoint, RGB, StitchKind, ToolId } from '../types';
 import { HOOP_PRESETS } from '../types';
 
 function makeId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-export function defaultObject(kind: StitchKind, points: Point[], color: RGB): EmbObject {
+export function defaultObject(kind: StitchKind, points: PathPoint[], color: RGB): EmbObject {
   return {
     id: makeId(),
     kind,
