@@ -34,27 +34,39 @@ export type UnderlayType = 'none' | 'center-run' | 'edge-run' | 'zigzag' | 'doub
 
 export interface UnderlaySettings {
   // 'auto' picks a type + spacing from the object's own width/area (see stitching/underlay.ts
-  // autoUnderlayType); 'manual' uses `type`/`spacing` below as set by the user.
+  // autoUnderlayType) for pass 1, or 'none' for pass 2 — there's no sensible auto rule for
+  // a second pass, it's opt-in. 'manual' uses `type`/`spacing` below as set by the user.
   mode: 'auto' | 'manual';
   type: UnderlayType;
   spacing: number; // mm; row spacing (tatami/zigzag) or stitch length (run types)
 }
 
-export function defaultUnderlay(type: UnderlayType = 'none'): UnderlaySettings {
-  return { mode: 'auto', type, spacing: 2.5 };
+export function defaultUnderlay(type: UnderlayType = 'none', mode: 'auto' | 'manual' = 'auto'): UnderlaySettings {
+  return { mode, type, spacing: 2.5 };
+}
+
+// Two sequential underlay passes — e.g. an edge-run pass 1 followed by a tatami or
+// zigzag pass 2, a common combination for stabilizing before dense top stitching.
+export interface TwoPassUnderlay {
+  pass1: UnderlaySettings;
+  pass2: UnderlaySettings;
+}
+
+export function defaultTwoPassUnderlay(pass1Type: UnderlayType): TwoPassUnderlay {
+  return { pass1: defaultUnderlay(pass1Type, 'auto'), pass2: defaultUnderlay('none', 'manual') };
 }
 
 export interface SatinParams {
   width: number; // mm, rail-to-rail
   density: number; // mm between zigzag stitches along the path
-  underlay: UnderlaySettings;
+  underlay: TwoPassUnderlay;
 }
 
 export interface FillParams {
   angle: number; // degrees, scan-line direction
   rowSpacing: number; // mm between rows
   stitchLength: number; // mm along each row
-  underlay: UnderlaySettings;
+  underlay: TwoPassUnderlay;
 }
 
 export interface EmbObject {

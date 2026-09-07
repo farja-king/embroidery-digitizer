@@ -1,6 +1,20 @@
-import type { EmbObject, Point } from '../types';
+import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
 import { flattenPath, normalAt, resamplePath, tatamiRows } from './geometry';
-import { autoUnderlayType, fillUnderlay, satinUnderlay } from './underlay';
+import { autoUnderlayType, fillUnderlay, normalizeUnderlay, satinUnderlay } from './underlay';
+
+/** Runs both underlay passes and concatenates their stitches, pass 1 then pass 2.
+ * Pass 1's 'auto' mode uses the object's own auto heuristic; pass 2 has no such
+ * heuristic (a second pass is always an opt-in extra), so its 'auto' just means "none". */
+function resolveUnderlay(
+  obj: EmbObject,
+  field: TwoPassUnderlay | UnderlaySettings | undefined,
+  generate: (settings: UnderlaySettings, type: UnderlayType) => Point[],
+): Point[] {
+  const { pass1, pass2 } = normalizeUnderlay(field);
+  const type1 = pass1.mode === 'auto' ? autoUnderlayType(obj) : pass1.type;
+  const type2 = pass2.mode === 'auto' ? 'none' : pass2.type;
+  return [...generate(pass1, type1), ...generate(pass2, type2)];
+}
 
 export type Command = 'STITCH' | 'JUMP' | 'TRIM' | 'COLOR_CHANGE' | 'END';
 
@@ -60,13 +74,15 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
     case 'running':
       return runningStitches(flat, obj.running.stitchLength, obj.running.triple);
     case 'satin': {
-      const type = obj.satin.underlay.mode === 'auto' ? autoUnderlayType(obj) : obj.satin.underlay.type;
-      const underlayPts = satinUnderlay(flat, obj.satin.width, obj.satin.underlay, type);
+      const underlayPts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) =>
+        satinUnderlay(flat, obj.satin.width, settings, type),
+      );
       return satinStitches(flat, obj.satin.width, obj.satin.density, underlayPts);
     }
     case 'fill': {
-      const type = obj.fill.underlay.mode === 'auto' ? autoUnderlayType(obj) : obj.fill.underlay.type;
-      const underlayPts = fillUnderlay(flat, obj.fill.angle, obj.fill.underlay, type);
+      const underlayPts = resolveUnderlay(obj, obj.fill.underlay, (settings, type) =>
+        fillUnderlay(flat, obj.fill.angle, settings, type),
+      );
       return fillStitches(flat, obj.fill.angle, obj.fill.rowSpacing, obj.fill.stitchLength, underlayPts);
     }
     default:

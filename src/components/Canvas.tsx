@@ -19,7 +19,7 @@ function rgbCss(c: { r: number; g: number; b: number }): string {
 }
 
 export default function Canvas() {
-  const { doc, dispatch, selectedId, setSelectedId, tool, activeColor } = useStore();
+  const { doc, dispatch, undo, redo, selectedId, setSelectedId, tool, activeColor } = useStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ scale: 3.5, panX: 0, panY: 0 });
@@ -246,19 +246,42 @@ export default function Canvas() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Enter') finishDrawing(false);
       if (e.key === 'Escape') finishDrawing(true);
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedId && document.activeElement?.tagName !== 'INPUT') {
+
+      const typingInField = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
+      if (typingInField) return; // let the field's own native editing (including its own Backspace/Ctrl+Z) happen
+
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
+      if (e.key === 'Delete') {
+        if (selectedId) {
           dispatch({ type: 'REMOVE_OBJECT', id: selectedId });
           setSelectedId(null);
         }
+        return;
       }
-      if ((e.key === 'd' || e.key === 'D') && document.activeElement?.tagName !== 'INPUT') {
+      if (e.key === 'Backspace') {
+        e.preventDefault(); // otherwise some browsers treat it as "navigate back"
+        if (drawingPoints && drawingPoints.length > 0) {
+          setDrawingPoints((prev) => (prev && prev.length > 1 ? prev.slice(0, -1) : null));
+        }
+        return;
+      }
+      if (e.key === 'd' || e.key === 'D') {
         dispatch({ type: 'UPDATE_BACKGROUND', patch: { visible: !doc.background?.visible } });
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [finishDrawing, selectedId, dispatch, setSelectedId, doc.background?.visible]);
+  }, [finishDrawing, selectedId, dispatch, setSelectedId, doc.background?.visible, drawingPoints, undo, redo]);
 
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();

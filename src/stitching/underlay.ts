@@ -1,5 +1,16 @@
-import type { EmbObject, Point, UnderlaySettings, UnderlayType } from '../types';
+import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
 import { normalAt, polygonArea, resamplePath, tatamiRows } from './geometry';
+
+const NO_UNDERLAY: UnderlaySettings = { mode: 'manual', type: 'none', spacing: 2.5 };
+
+/** Accepts both the current two-pass shape and an older single-pass `UnderlaySettings`
+ * (from a project saved before pass 2 existed, or no underlay field at all) so opening
+ * an old project file doesn't crash — it just reads as "pass 1 only". */
+export function normalizeUnderlay(field: TwoPassUnderlay | UnderlaySettings | undefined | null): TwoPassUnderlay {
+  if (!field) return { pass1: NO_UNDERLAY, pass2: NO_UNDERLAY };
+  if ('pass1' in field) return field;
+  return { pass1: field, pass2: NO_UNDERLAY };
+}
 
 /** Picks a sensible underlay type from the object's own dimensions, the way a human
  * digitizer would by rule of thumb — used when underlay.mode === 'auto'. */
@@ -24,16 +35,23 @@ function centerRun(centerline: Point[], closed: boolean, spacing: number): Point
   return resamplePath(path, Math.max(0.4, spacing));
 }
 
+/** Offsets every point of an already-fine path along its own local normal. Doing this
+ * at the path's full (fine) resolution — rather than computing normals from a coarse
+ * resample first — is what keeps the offset curve accurate on a tight bend; normals
+ * estimated from far-apart points cut corners and can swing outside the satin's own
+ * width on a curve, which is what was happening before this existed. */
+function offsetPath(fine: Point[], amount: number): Point[] {
+  return fine.map((p, i) => {
+    const n = normalAt(fine, i);
+    return { x: p.x + n.x * amount, y: p.y + n.y * amount };
+  });
+}
+
 function edgeRunSatin(centerline: Point[], width: number, spacing: number): Point[] {
   const half = (width / 2) * 0.85; // inset slightly from the final satin edge
-  const sampled = resamplePath(centerline, Math.max(0.4, spacing));
-  const rail1: Point[] = [];
-  const rail2: Point[] = [];
-  for (let i = 0; i < sampled.length; i++) {
-    const n = normalAt(sampled, i);
-    rail1.push({ x: sampled[i].x + n.x * half, y: sampled[i].y + n.y * half });
-    rail2.push({ x: sampled[i].x - n.x * half, y: sampled[i].y - n.y * half });
-  }
+  const step = Math.max(0.4, spacing);
+  const rail1 = resamplePath(offsetPath(centerline, half), step);
+  const rail2 = resamplePath(offsetPath(centerline, -half), step);
   return [...rail1, ...rail2.reverse()];
 }
 
@@ -43,12 +61,14 @@ function edgeRunFill(polygon: Point[], spacing: number): Point[] {
 
 function zigzag(centerline: Point[], width: number, spacing: number, widthFactor: number, phase: 1 | -1): Point[] {
   const half = (width / 2) * widthFactor;
-  const sampled = resamplePath(centerline, Math.max(0.4, spacing));
+  const step = Math.max(0.4, spacing);
+  const posRail = resamplePath(offsetPath(centerline, half), step);
+  const negRail = resamplePath(offsetPath(centerline, -half), step);
+  const n = Math.min(posRail.length, negRail.length);
   const out: Point[] = [];
-  for (let i = 0; i < sampled.length; i++) {
-    const n = normalAt(sampled, i);
-    const side = (i % 2 === 0 ? 1 : -1) * phase;
-    out.push({ x: sampled[i].x + n.x * half * side, y: sampled[i].y + n.y * half * side });
+  for (let i = 0; i < n; i++) {
+    const onPos = (i % 2 === 0) === (phase === 1);
+    out.push(onPos ? posRail[i] : negRail[i]);
   }
   return out;
 }

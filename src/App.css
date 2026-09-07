@@ -55,6 +55,25 @@
   background: #fff;
 }
 
+.undo-redo-group {
+  display: flex;
+  gap: 4px;
+}
+.undo-redo-group button {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 6px;
+  width: 30px;
+  height: 30px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.undo-redo-group button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .spacer {
   flex: 1;
 }

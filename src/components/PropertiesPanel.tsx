@@ -1,6 +1,6 @@
 import { useStore } from '../state/store';
-import type { EmbObject, UnderlaySettings, UnderlayType } from '../types';
-import { autoUnderlayType } from '../stitching/underlay';
+import type { EmbObject, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
+import { autoUnderlayType, normalizeUnderlay } from '../stitching/underlay';
 
 const UNDERLAY_LABELS: Record<UnderlayType, string> = {
   none: 'None',
@@ -12,18 +12,19 @@ const UNDERLAY_LABELS: Record<UnderlayType, string> = {
 };
 
 function UnderlayField({
-  obj,
+  label,
   underlay,
+  autoType,
   onChange,
 }: {
-  obj: EmbObject;
+  label: string;
   underlay: UnderlaySettings;
+  autoType: UnderlayType | null; // null: this pass has no auto heuristic, "Auto" just means off
   onChange: (u: UnderlaySettings) => void;
 }) {
-  const autoType = autoUnderlayType(obj);
   return (
     <div className="underlay-field">
-      <div className="field-label">Underlay</div>
+      <div className="field-label">{label}</div>
       <div className="underlay-mode-toggle">
         <button className={underlay.mode === 'auto' ? 'active' : ''} onClick={() => onChange({ ...underlay, mode: 'auto' })}>
           Auto
@@ -33,7 +34,9 @@ function UnderlayField({
         </button>
       </div>
       {underlay.mode === 'auto' ? (
-        <p className="muted underlay-auto-note">Using {UNDERLAY_LABELS[autoType]} based on this shape's size.</p>
+        <p className="muted underlay-auto-note">
+          {autoType ? `Using ${UNDERLAY_LABELS[autoType]} based on this shape's size.` : "Off — switch to Manual to add a pass here."}
+        </p>
       ) : (
         <>
           <label className="field">
@@ -59,6 +62,34 @@ function UnderlayField({
         </>
       )}
     </div>
+  );
+}
+
+function TwoPassUnderlayFields({
+  obj,
+  underlay,
+  onChange,
+}: {
+  obj: EmbObject;
+  underlay: TwoPassUnderlay | UnderlaySettings;
+  onChange: (u: TwoPassUnderlay) => void;
+}) {
+  const normalized = normalizeUnderlay(underlay);
+  return (
+    <>
+      <UnderlayField
+        label="Underlay 1"
+        underlay={normalized.pass1}
+        autoType={autoUnderlayType(obj)}
+        onChange={(pass1) => onChange({ ...normalized, pass1 })}
+      />
+      <UnderlayField
+        label="Underlay 2 (optional)"
+        underlay={normalized.pass2}
+        autoType={null}
+        onChange={(pass2) => onChange({ ...normalized, pass2 })}
+      />
+    </>
   );
 }
 
@@ -136,7 +167,11 @@ export default function PropertiesPanel() {
             step={0.1}
             onChange={(v) => update({ satin: { ...obj.satin, density: v } })}
           />
-          <UnderlayField obj={obj} underlay={obj.satin.underlay} onChange={(underlay) => update({ satin: { ...obj.satin, underlay } })} />
+          <TwoPassUnderlayFields
+            obj={obj}
+            underlay={obj.satin.underlay}
+            onChange={(underlay) => update({ satin: { ...obj.satin, underlay } })}
+          />
         </>
       )}
 
@@ -166,7 +201,11 @@ export default function PropertiesPanel() {
             step={0.1}
             onChange={(v) => update({ fill: { ...obj.fill, stitchLength: v } })}
           />
-          <UnderlayField obj={obj} underlay={obj.fill.underlay} onChange={(underlay) => update({ fill: { ...obj.fill, underlay } })} />
+          <TwoPassUnderlayFields
+            obj={obj}
+            underlay={obj.fill.underlay}
+            onChange={(underlay) => update({ fill: { ...obj.fill, underlay } })}
+          />
         </>
       )}
     </div>

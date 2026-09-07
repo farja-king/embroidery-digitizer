@@ -13,7 +13,7 @@ const FORMATS: { id: ExportFormat; label: string }[] = [
 ];
 
 export default function HeaderBar() {
-  const { doc, dispatch } = useStore();
+  const { doc, dispatch, undo, redo, canUndo, canRedo } = useStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [showEmbNote, setShowEmbNote] = useState(false);
@@ -74,6 +74,15 @@ export default function HeaderBar() {
           </option>
         ))}
       </select>
+
+      <div className="undo-redo-group">
+        <button onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)">
+          ↶
+        </button>
+        <button onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)">
+          ↷
+        </button>
+      </div>
 
       <div className="spacer" />
 
