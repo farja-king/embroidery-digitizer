@@ -1,5 +1,5 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { normalAt, polygonArea, resamplePath, tatamiRows } from './geometry';
+import { dist, normalAt, polygonArea, resamplePath, tatamiRows } from './geometry';
 
 const NO_UNDERLAY: UnderlaySettings = { mode: 'manual', type: 'none', spacing: 2.5 };
 
@@ -47,6 +47,32 @@ function offsetPath(fine: Point[], amount: number): Point[] {
   });
 }
 
+/** Trims `path` so it starts `distance` further along by arc length — used to shift
+ * a resample's starting phase, e.g. so a second zigzag pass lands in the gaps left
+ * by the first instead of retracing the same points. */
+function trimPathStart(path: Point[], distance: number): Point[] {
+  if (distance <= 0 || path.length < 2) return path;
+  let remaining = distance;
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1];
+    const b = path[i];
+    const segLen = dist(a, b);
+    if (segLen === 0) continue;
+    // Strictly less-than (with a small epsilon), not <=: when the trim distance lands
+    // exactly on an existing vertex, falling through to the next iteration instead of
+    // inserting a synthetic point here avoids creating a point that coincides with `b`
+    // — a duplicate that gives normalAt a zero-length neighbor pair (a degenerate
+    // normal), which threw off every offset/resample computed from it downstream.
+    if (remaining < segLen - 1e-9) {
+      const t = remaining / segLen;
+      const start = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+      return [start, ...path.slice(i)];
+    }
+    remaining -= segLen;
+  }
+  return [path[path.length - 1]];
+}
+
 function edgeRunSatin(centerline: Point[], width: number, spacing: number): Point[] {
   const half = (width / 2) * 0.85; // inset slightly from the final satin edge
   const step = Math.max(0.4, spacing);
@@ -59,11 +85,19 @@ function edgeRunFill(polygon: Point[], spacing: number): Point[] {
   return resamplePath([...polygon, polygon[0]], Math.max(0.4, spacing));
 }
 
-function zigzag(centerline: Point[], width: number, spacing: number, widthFactor: number, phase: 1 | -1): Point[] {
+function zigzag(
+  centerline: Point[],
+  width: number,
+  spacing: number,
+  widthFactor: number,
+  phase: 1 | -1,
+  offset = 0,
+): Point[] {
   const half = (width / 2) * widthFactor;
   const step = Math.max(0.4, spacing);
-  const posRail = resamplePath(offsetPath(centerline, half), step);
-  const negRail = resamplePath(offsetPath(centerline, -half), step);
+  const path = trimPathStart(centerline, offset);
+  const posRail = resamplePath(offsetPath(path, half), step);
+  const negRail = resamplePath(offsetPath(path, -half), step);
   const n = Math.min(posRail.length, negRail.length);
   const out: Point[] = [];
   for (let i = 0; i < n; i++) {
@@ -73,9 +107,14 @@ function zigzag(centerline: Point[], width: number, spacing: number, widthFactor
   return out;
 }
 
+/** A real double-zigzag underlay: pass 1 zigzags forward corner-to-corner, then pass 2
+ * zigzags the same width back the way it came, offset by half a stitch so it lands in
+ * the gaps pass 1 left rather than retracing it — doubling the crossing density instead
+ * of just stitching the same zigzag twice. */
 function doubleZigzag(centerline: Point[], width: number, spacing: number): Point[] {
-  const pass1 = zigzag(centerline, width, spacing, 0.65, 1);
-  const pass2 = zigzag(centerline, width, spacing, 0.4, -1);
+  const widthFactor = 0.6; // same width as a single zigzag pass
+  const pass1 = zigzag(centerline, width, spacing, widthFactor, 1, 0);
+  const pass2 = zigzag(centerline, width, spacing, widthFactor, 1, spacing / 2);
   return [...pass1, ...pass2.reverse()];
 }
 
@@ -114,12 +153,17 @@ export function fillUnderlay(polygon: Point[], topAngle: number, settings: Under
     case 'edge-run':
       return edgeRunFill(polygon, spacing);
     case 'tatami':
-      return tatamiRows(polygon, topAngle + 90, spacing, spacing * 1.5);
     case 'zigzag':
-    case 'double-zigzag':
-      // Zigzag underlay is a satin-column idea; for a fill area, a sparse
-      // perpendicular tatami pass is the closest sensible equivalent.
+      // Zigzag underlay is a satin-column idea with no natural fill equivalent;
+      // treat it the same as a single perpendicular tatami pass.
       return tatamiRows(polygon, topAngle + 90, spacing, spacing * 1.5);
+    case 'double-zigzag': {
+      // A real double-tatami underlay: one pass perpendicular to the top stitching,
+      // one pass parallel to it -- a crossed grid, not the same direction twice.
+      const passA = tatamiRows(polygon, topAngle + 90, spacing, spacing * 1.5);
+      const passB = tatamiRows(polygon, topAngle, spacing, spacing * 1.5);
+      return [...passA, ...passB];
+    }
     default:
       return [];
   }
