@@ -1,6 +1,17 @@
 import { useStore } from '../state/store';
-import type { EmbObject, StitchKind, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
+import type { EmbObject, PathPoint, StitchKind, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
 import { autoUnderlayType, normalizeUnderlay } from '../stitching/underlay';
+
+/** A fill's points form an implicitly-closed loop (the stitch engine always connects
+ * last back to first); a running/satin path doesn't. So converting fill -> outline
+ * needs an explicit closing point, or the outline would be missing that final edge. */
+function closeLoop(points: PathPoint[]): PathPoint[] {
+  if (points.length < 2) return points;
+  const first = points[0];
+  const last = points[points.length - 1];
+  const alreadyClosed = Math.hypot(first.x - last.x, first.y - last.y) < 0.01;
+  return alreadyClosed ? points : [...points, { ...first }];
+}
 
 const UNDERLAY_LABELS: Record<UnderlayType, string> = {
   none: 'None',
@@ -143,6 +154,16 @@ export default function PropertiesPanel() {
         Thread color
         <input type="color" value={rgbToHex(obj.color)} onChange={(e) => update({ color: hexToRgb(e.target.value) })} />
       </label>
+
+      {obj.kind === 'fill' ? (
+        <button className="convert-kind-btn" onClick={() => update({ kind: 'running', points: closeLoop(obj.points) })}>
+          Convert to outline
+        </button>
+      ) : (
+        <button className="convert-kind-btn" onClick={() => update({ kind: 'fill' })}>
+          Convert to fill
+        </button>
+      )}
 
       {obj.kind === 'running' && (
         <>

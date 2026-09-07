@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import type { BackgroundImage, Document, EmbObject, HoopSize, PathPoint, RGB, StitchKind, ToolId } from '../types';
 import { HOOP_PRESETS, defaultTwoPassUnderlay } from '../types';
 
-function makeId(): string {
+export function makeId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
@@ -32,6 +32,7 @@ type Action =
   | { type: 'ADD_OBJECT'; object: EmbObject }
   | { type: 'UPDATE_OBJECT'; id: string; patch: Partial<EmbObject> }
   | { type: 'REMOVE_OBJECT'; id: string }
+  | { type: 'DUPLICATE_OBJECT'; id: string; newId: string }
   | { type: 'REORDER'; fromIndex: number; toIndex: number }
   | { type: 'SET_HOOP'; hoop: HoopSize }
   | { type: 'SET_NAME'; name: string }
@@ -51,6 +52,21 @@ function reducer(state: Document, action: Action): Document {
       };
     case 'REMOVE_OBJECT':
       return { ...state, objects: state.objects.filter((o) => o.id !== action.id) };
+    case 'DUPLICATE_OBJECT': {
+      const index = state.objects.findIndex((o) => o.id === action.id);
+      if (index === -1) return state;
+      const original = state.objects[index];
+      const offset = 5; // mm, so the copy doesn't sit invisibly on top of the original
+      const copy: EmbObject = {
+        ...original,
+        id: action.newId,
+        name: `${original.name} copy`,
+        points: original.points.map((p) => ({ ...p, x: p.x + offset, y: p.y + offset })),
+      };
+      const objects = state.objects.slice();
+      objects.splice(index + 1, 0, copy);
+      return { ...state, objects };
+    }
     case 'REORDER': {
       const objs = state.objects.slice();
       const [moved] = objs.splice(action.fromIndex, 1);

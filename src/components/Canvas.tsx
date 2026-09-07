@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useStore, defaultObject } from '../state/store';
+import { useStore, defaultObject, makeId } from '../state/store';
 import type { EmbObject, PathPoint, Point } from '../types';
 import { generateObjectStitches } from '../stitching/engine';
 import { distanceToPolyline, flattenPath, pointInPolygon } from '../stitching/geometry';
@@ -258,6 +258,15 @@ export default function Canvas() {
       if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) {
         e.preventDefault();
         redo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+        e.preventDefault(); // otherwise the browser tries to bookmark the page
+        if (selectedId) {
+          const newId = makeId();
+          dispatch({ type: 'DUPLICATE_OBJECT', id: selectedId, newId });
+          setSelectedId(newId);
+        }
         return;
       }
 

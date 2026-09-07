@@ -1,4 +1,4 @@
-import { useStore } from '../state/store';
+import { useStore, makeId } from '../state/store';
 
 const KIND_LABEL: Record<string, string> = { running: 'Running', satin: 'Satin', fill: 'Fill' };
 
@@ -40,6 +40,17 @@ export default function ObjectsPanel() {
                 onClick={(e) => { e.stopPropagation(); dispatch({ type: 'UPDATE_OBJECT', id: o.id, patch: { locked: !o.locked } }); }}
               >
                 {o.locked ? '🔒' : '🔓'}
+              </button>
+              <button
+                title="Duplicate (Ctrl+D)"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const newId = makeId();
+                  dispatch({ type: 'DUPLICATE_OBJECT', id: o.id, newId });
+                  setSelectedId(newId);
+                }}
+              >
+                ⧉
               </button>
               <button
                 title="Delete"
