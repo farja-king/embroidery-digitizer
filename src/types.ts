@@ -29,8 +29,14 @@ export interface RunningParams {
 }
 
 // 'none' disables underlay entirely. The rest name a real digitizing underlay pattern —
-// see stitching/underlay.ts for what each one actually generates.
-export type UnderlayType = 'none' | 'center-run' | 'edge-run' | 'zigzag' | 'double-zigzag' | 'tatami';
+// see stitching/underlay.ts for what each one actually generates. Per Hatch's own
+// underlay model, zigzag/double-zigzag are a *column* (satin) concept — an angled
+// bounce stitch across the width — and tatami/double-tatami are a *fill* concept —
+// straight rows across the area, "double" meaning a second crossed pass (horizontal
+// then vertical). They're deliberately kept as distinct type values (not the same
+// "double" reused for both) so the UI only ever offers the pair that matches the
+// selected object's kind — see UNDERLAY_TYPES_BY_KIND in PropertiesPanel.tsx.
+export type UnderlayType = 'none' | 'center-run' | 'edge-run' | 'zigzag' | 'double-zigzag' | 'tatami' | 'double-tatami';
 
 export interface UnderlaySettings {
   // 'auto' picks a type + spacing from the object's own width/area (see stitching/underlay.ts

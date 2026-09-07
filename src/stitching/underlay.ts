@@ -25,7 +25,8 @@ export function autoUnderlayType(obj: EmbObject): UnderlayType {
   if (obj.kind === 'fill') {
     const area = Math.abs(polygonArea(obj.points));
     if (area < 30) return 'edge-run'; // small shape: just walk the perimeter
-    return 'tatami';
+    if (area < 400) return 'tatami';
+    return 'double-tatami';
   }
   return 'none';
 }
@@ -133,9 +134,13 @@ export function satinUnderlay(centerline: Point[], width: number, settings: Unde
       return zigzag(centerline, width, spacing, 0.6, 1);
     case 'double-zigzag':
       return doubleZigzag(centerline, width, spacing);
+    // tatami/double-tatami are a fill concept (straight rows across an area), not a
+    // column one — there's no UI path to select them for a satin, but old saved data
+    // could have one, so fall back to the closest column equivalent rather than no-op.
     case 'tatami':
-      // Not a natural fit for a narrow column — fall back to the closest equivalent.
       return zigzag(centerline, width, spacing, 0.6, 1);
+    case 'double-tatami':
+      return doubleZigzag(centerline, width, spacing);
     default:
       return [];
   }
@@ -153,13 +158,21 @@ export function fillUnderlay(polygon: Point[], topAngle: number, settings: Under
     case 'edge-run':
       return edgeRunFill(polygon, spacing);
     case 'tatami':
+      // Straight rows across the area, perpendicular to the top stitching.
+      return tatamiRows(polygon, topAngle + 90, spacing, spacing * 1.5);
+    case 'double-tatami': {
+      // One pass perpendicular to the top stitching, one parallel to it -- a crossed
+      // grid (horizontal one way, vertical the other), not the same direction twice.
+      const passA = tatamiRows(polygon, topAngle + 90, spacing, spacing * 1.5);
+      const passB = tatamiRows(polygon, topAngle, spacing, spacing * 1.5);
+      return [...passA, ...passB];
+    }
+    // zigzag/double-zigzag are a column (satin) concept -- an angled bounce stitch --
+    // not a fill one; there's no UI path to select them for a fill, but old saved data
+    // could have one, so fall back to the nearest fill equivalent rather than no-op.
     case 'zigzag':
-      // Zigzag underlay is a satin-column idea with no natural fill equivalent;
-      // treat it the same as a single perpendicular tatami pass.
       return tatamiRows(polygon, topAngle + 90, spacing, spacing * 1.5);
     case 'double-zigzag': {
-      // A real double-tatami underlay: one pass perpendicular to the top stitching,
-      // one pass parallel to it -- a crossed grid, not the same direction twice.
       const passA = tatamiRows(polygon, topAngle + 90, spacing, spacing * 1.5);
       const passB = tatamiRows(polygon, topAngle, spacing, spacing * 1.5);
       return [...passA, ...passB];

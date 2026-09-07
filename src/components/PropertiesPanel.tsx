@@ -1,5 +1,5 @@
 import { useStore } from '../state/store';
-import type { EmbObject, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
+import type { EmbObject, StitchKind, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
 import { autoUnderlayType, normalizeUnderlay } from '../stitching/underlay';
 
 const UNDERLAY_LABELS: Record<UnderlayType, string> = {
@@ -9,17 +9,30 @@ const UNDERLAY_LABELS: Record<UnderlayType, string> = {
   zigzag: 'Zigzag',
   'double-zigzag': 'Double zigzag',
   tatami: 'Tatami',
+  'double-tatami': 'Double tatami',
+};
+
+// Zigzag/double-zigzag (an angled bounce stitch across a width) is a satin-column
+// concept; tatami/double-tatami (straight rows across an area) is a fill concept.
+// Offering both for both kinds is what made them look identical in the UI before —
+// each kind only ever sees the pair that actually applies to it.
+const UNDERLAY_TYPES_BY_KIND: Record<StitchKind, UnderlayType[]> = {
+  running: ['none'],
+  satin: ['none', 'center-run', 'edge-run', 'zigzag', 'double-zigzag'],
+  fill: ['none', 'center-run', 'edge-run', 'tatami', 'double-tatami'],
 };
 
 function UnderlayField({
   label,
   underlay,
   autoType,
+  typeOptions,
   onChange,
 }: {
   label: string;
   underlay: UnderlaySettings;
   autoType: UnderlayType | null; // null: this pass has no auto heuristic, "Auto" just means off
+  typeOptions: UnderlayType[];
   onChange: (u: UnderlaySettings) => void;
 }) {
   return (
@@ -42,7 +55,7 @@ function UnderlayField({
           <label className="field">
             Type
             <select value={underlay.type} onChange={(e) => onChange({ ...underlay, type: e.target.value as UnderlayType })}>
-              {(Object.keys(UNDERLAY_LABELS) as UnderlayType[]).map((t) => (
+              {typeOptions.map((t) => (
                 <option key={t} value={t}>
                   {UNDERLAY_LABELS[t]}
                 </option>
@@ -75,18 +88,21 @@ function TwoPassUnderlayFields({
   onChange: (u: TwoPassUnderlay) => void;
 }) {
   const normalized = normalizeUnderlay(underlay);
+  const typeOptions = UNDERLAY_TYPES_BY_KIND[obj.kind];
   return (
     <>
       <UnderlayField
         label="Underlay 1"
         underlay={normalized.pass1}
         autoType={autoUnderlayType(obj)}
+        typeOptions={typeOptions}
         onChange={(pass1) => onChange({ ...normalized, pass1 })}
       />
       <UnderlayField
         label="Underlay 2 (optional)"
         underlay={normalized.pass2}
         autoType={null}
+        typeOptions={typeOptions}
         onChange={(pass2) => onChange({ ...normalized, pass2 })}
       />
     </>
