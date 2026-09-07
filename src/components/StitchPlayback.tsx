@@ -17,7 +17,7 @@ export default function StitchPlayback({ onClose }: { onClose: () => void }) {
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
 
-  const built = useMemo(() => buildPattern(doc.objects), [doc.objects]);
+  const built = useMemo(() => buildPattern(doc.objects, doc.trimThresholdMm), [doc.objects, doc.trimThresholdMm]);
   const stitches = built.stitches;
   const total = stitches.length;
 

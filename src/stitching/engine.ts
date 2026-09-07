@@ -133,7 +133,7 @@ function splitLongJump(from: Point, to: Point): Point[] {
 /** Flattens all visible objects, in list order, into one stitch sequence with
  * JUMP between disconnected objects, TRIM when the jump is long, and COLOR_CHANGE
  * whenever consecutive objects use a different thread color. */
-export function buildPattern(objects: EmbObject[]): BuiltPattern {
+export function buildPattern(objects: EmbObject[], trimThresholdMm = 3): BuiltPattern {
   const visible = objects.filter((o) => o.points.length >= 2 && o.visible);
   const perObjectStitches = new Map<string, StitchPoint[]>();
   for (const obj of visible) perObjectStitches.set(obj.id, generateObjectStitches(obj));
@@ -167,7 +167,7 @@ export function buildPattern(objects: EmbObject[]): BuiltPattern {
       // placed once we've already arrived, which is the convention every format below expects.
       const hops = splitLongJump(cursor, first);
       for (const hop of hops) stitches.push({ x: hop.x, y: hop.y, command: 'JUMP' });
-      if (jumpDist > 4) stitches.push({ x: first.x, y: first.y, command: 'TRIM' });
+      if (jumpDist >= trimThresholdMm) stitches.push({ x: first.x, y: first.y, command: 'TRIM' });
     }
 
     for (const sp of objStitches) stitches.push(sp);

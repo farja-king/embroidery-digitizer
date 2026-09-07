@@ -11,8 +11,8 @@ export type ExportFormat = 'dst' | 'exp' | 'jef' | 'pes' | 'pec';
 
 const MIME = 'application/octet-stream';
 
-export function exportStitchFile(objects: EmbObject[], name: string, format: ExportFormat): void {
-  const built = buildPattern(objects);
+export function exportStitchFile(objects: EmbObject[], name: string, format: ExportFormat, trimThresholdMm = 3): void {
+  const built = buildPattern(objects, trimThresholdMm);
   if (built.stitches.length === 0) {
     throw new Error('Nothing to export yet — draw at least one stitch object first.');
   }

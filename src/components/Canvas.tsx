@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, defaultObject, makeId } from '../state/store';
 import type { EmbObject, PathPoint, Point } from '../types';
-import { generateObjectStitches } from '../stitching/engine';
+import { buildPattern, generateObjectStitches, type StitchPoint } from '../stitching/engine';
 import { distanceToPolyline, flattenPath, pointInPolygon } from '../stitching/geometry';
+import { pointsForKindChange } from '../stitching/kindConvert';
 import BackgroundControls from './BackgroundControls';
+import ContextMenu, { type ContextMenuState } from './ContextMenu';
 
 const VERTEX_HIT_PX = 9;
 const OBJECT_HIT_PX = 8;
@@ -19,23 +21,27 @@ function rgbCss(c: { r: number; g: number; b: number }): string {
 }
 
 export default function Canvas() {
-  const { doc, dispatch, undo, redo, selectedId, setSelectedId, tool, activeColor } = useStore();
+  const { doc, dispatch, undo, redo, selectedId, setSelectedId, selectedIds, setSelectedIds, tool, activeColor } = useStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ scale: 3.5, panX: 0, panY: 0 });
   const [size, setSize] = useState({ w: 0, h: 0 });
   const centeredRef = useRef(false);
   const [showStitchPreview, setShowStitchPreview] = useState(false);
+  const [showCutMarkers, setShowCutMarkers] = useState(false);
   const [drawingPoints, setDrawingPoints] = useState<PathPoint[] | null>(null);
   const [mousePos, setMousePos] = useState<Point | null>(null);
   const [spaceDown, setSpaceDown] = useState(false);
   const spaceDownRef = useRef(false);
   const [bgImg, setBgImg] = useState<HTMLImageElement | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const dragRef = useRef<
     | { kind: 'pan'; startPx: Point; startPan: Point }
     | { kind: 'move-object'; id: string; startMm: Point; original: PathPoint[] }
+    | { kind: 'move-multi'; ids: string[]; startMm: Point; originals: Map<string, PathPoint[]> }
     | { kind: 'move-vertex'; id: string; index: number }
     | { kind: 'rect'; corner: Point; ellipse: boolean }
+    | { kind: 'marquee'; corner: Point }
     | null
   >(null);
 
@@ -70,6 +76,13 @@ export default function Canvas() {
     img.onload = () => setBgImg(img);
     img.src = doc.background.src;
   }, [doc.background?.src]);
+
+  // Only computed when the "Show cut points" toggle is on -- this walks the full
+  // combined stitch sequence (same one the exporters use), so it's not free.
+  const cutMarkerPattern = useMemo(
+    () => (showCutMarkers ? buildPattern(doc.objects, doc.trimThresholdMm) : null),
+    [showCutMarkers, doc.objects, doc.trimThresholdMm],
+  );
 
   const toDesign = useCallback(
     (px: number, py: number): Point => ({
@@ -156,6 +169,23 @@ export default function Canvas() {
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
     const p = toDesign(px, py);
+
+    // Right-click in select mode opens a context menu instead of panning/drawing;
+    // right-click while placing points (running/satin/fill) still means "curve point",
+    // handled further down, so this only intercepts when there's a selection to act on.
+    if (e.button === 2 && tool === 'select') {
+      const selected = doc.objects.find((o) => o.id === selectedId);
+      const vi = selected ? getVertexAt(p, selected) : -1;
+      const hit = vi >= 0 ? selected! : getObjectAt(p);
+      if (hit) {
+        if (!selectedIds.includes(hit.id)) setSelectedId(hit.id);
+        setContextMenu({ screenX: e.clientX, screenY: e.clientY, obj: hit, vertexIndex: vi >= 0 ? vi : null });
+      } else {
+        setContextMenu(null);
+      }
+      return;
+    }
+    setContextMenu(null);
     (e.target as Element).setPointerCapture(e.pointerId);
 
     if (spaceDownRef.current || e.button === 1) {
@@ -174,13 +204,19 @@ export default function Canvas() {
       }
       const hit = getObjectAt(p);
       if (hit) {
+        if (selectedIds.length > 1 && selectedIds.includes(hit.id)) {
+          // dragging one of an existing multi-selection moves the whole group
+          const originals = new Map(doc.objects.filter((o) => selectedIds.includes(o.id)).map((o) => [o.id, o.points.map((pt) => ({ ...pt }))]));
+          dragRef.current = { kind: 'move-multi', ids: selectedIds, startMm: p, originals };
+          return;
+        }
         setSelectedId(hit.id);
         if (!hit.locked) dragRef.current = { kind: 'move-object', id: hit.id, startMm: p, original: hit.points.map((pt) => ({ ...pt })) };
         return;
       }
-      setSelectedId(null);
-      // empty space in select mode: drag to pan, same as holding Space
-      dragRef.current = { kind: 'pan', startPx: { x: px, y: py }, startPan: { x: view.panX, y: view.panY } };
+      setSelectedIds([]);
+      // empty space in select mode: drag to marquee-select multiple objects
+      dragRef.current = { kind: 'marquee', corner: p };
       return;
     }
 
@@ -223,11 +259,40 @@ export default function Canvas() {
     } else if (drag.kind === 'rect') {
       const target = e.shiftKey ? constrainToSquare(drag.corner, p) : p;
       setDrawingPoints(rectPoints(drag.corner, target, drag.ellipse));
+    } else if (drag.kind === 'move-multi') {
+      const dx = p.x - drag.startMm.x;
+      const dy = p.y - drag.startMm.y;
+      for (const id of drag.ids) {
+        const original = drag.originals.get(id);
+        if (!original) continue;
+        dispatch({
+          type: 'UPDATE_OBJECT',
+          id,
+          patch: { points: original.map((pt) => ({ x: pt.x + dx, y: pt.y + dy, type: pt.type })) },
+        });
+      }
     }
+    // 'marquee' needs no per-move work: the rectangle is rendered live from
+    // drag.corner + mousePos (already updated above), and resolved at pointer-up.
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
+    if (drag?.kind === 'marquee') {
+      // Compute the release point straight from this event rather than trusting the
+      // `mousePos` state: a fast drag can fire pointerup before React has re-rendered
+      // with the last pointermove's setMousePos, leaving mousePos one frame stale and
+      // silently shrinking the marquee to whatever it was before the final move.
+      const rect = canvasRef.current!.getBoundingClientRect();
+      const end = toDesign(e.clientX - rect.left, e.clientY - rect.top);
+      const minX = Math.min(drag.corner.x, end.x);
+      const maxX = Math.max(drag.corner.x, end.x);
+      const minY = Math.min(drag.corner.y, end.y);
+      const maxY = Math.max(drag.corner.y, end.y);
+      const touchesMarquee = (o: EmbObject) => o.points.some((pt) => pt.x >= minX && pt.x <= maxX && pt.y >= minY && pt.y <= maxY);
+      const matched = doc.objects.filter((o) => o.visible && !o.locked && touchesMarquee(o)).map((o) => o.id);
+      setSelectedIds(matched);
+    }
     if (drag?.kind === 'rect') {
       const pts = drawingPoints;
       setDrawingPoints(null);
@@ -262,19 +327,20 @@ export default function Canvas() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
         e.preventDefault(); // otherwise the browser tries to bookmark the page
-        if (selectedId) {
-          const newId = makeId();
-          dispatch({ type: 'DUPLICATE_OBJECT', id: selectedId, newId });
-          setSelectedId(newId);
+        if (selectedIds.length > 0) {
+          const newIds = selectedIds.map((id) => {
+            const newId = makeId();
+            dispatch({ type: 'DUPLICATE_OBJECT', id, newId });
+            return newId;
+          });
+          setSelectedIds(newIds);
         }
         return;
       }
 
       if (e.key === 'Delete') {
-        if (selectedId) {
-          dispatch({ type: 'REMOVE_OBJECT', id: selectedId });
-          setSelectedId(null);
-        }
+        for (const id of selectedIds) dispatch({ type: 'REMOVE_OBJECT', id });
+        if (selectedIds.length > 0) setSelectedIds([]);
         return;
       }
       if (e.key === 'Backspace') {
@@ -287,10 +353,13 @@ export default function Canvas() {
       if (e.key === 'd' || e.key === 'D') {
         dispatch({ type: 'UPDATE_BACKGROUND', patch: { visible: !doc.background?.visible } });
       }
+      if (e.key === 't' || e.key === 'T') {
+        setShowStitchPreview((v) => !v);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [finishDrawing, selectedId, dispatch, setSelectedId, doc.background?.visible, drawingPoints, undo, redo]);
+  }, [finishDrawing, selectedId, dispatch, setSelectedId, selectedIds, setSelectedIds, doc.background?.visible, drawingPoints, undo, redo]);
 
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
@@ -358,7 +427,26 @@ export default function Canvas() {
 
     for (const obj of doc.objects) {
       if (!obj.visible) continue;
-      drawObject(ctx, obj, toScreen, view.scale, obj.id === selectedId, showStitchPreview);
+      drawObject(ctx, obj, toScreen, view.scale, selectedIds.includes(obj.id), showStitchPreview);
+    }
+
+    if (cutMarkerPattern) drawCutMarkers(ctx, cutMarkerPattern.stitches, toScreen);
+
+    // marquee-select rectangle, live while dragging
+    if (dragRef.current?.kind === 'marquee' && mousePos) {
+      const a = toScreen(dragRef.current.corner);
+      const b = toScreen(mousePos);
+      ctx.strokeStyle = '#2f6fed';
+      ctx.fillStyle = 'rgba(47, 111, 237, 0.08)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      const x = Math.min(a.x, b.x);
+      const y = Math.min(a.y, b.y);
+      const w2 = Math.abs(b.x - a.x);
+      const h2 = Math.abs(b.y - a.y);
+      ctx.fillRect(x, y, w2, h2);
+      ctx.strokeRect(x, y, w2, h2);
+      ctx.setLineDash([]);
     }
 
     if (drawingPoints && drawingPoints.length > 0) {
@@ -382,7 +470,7 @@ export default function Canvas() {
       ctx.setLineDash([]);
       for (const p of drawingPoints) drawVertexMarker(ctx, toScreen(p), p.type, '#2f6fed', '#2f6fed');
     }
-  }, [doc, view, size, selectedId, showStitchPreview, drawingPoints, mousePos, toScreen, bgImg]);
+  }, [doc, view, size, selectedIds, showStitchPreview, drawingPoints, mousePos, toScreen, bgImg, cutMarkerPattern]);
 
   const cursor = spaceDown ? (dragRef.current?.kind === 'pan' ? 'grabbing' : 'grab') : undefined;
 
@@ -402,7 +490,7 @@ export default function Canvas() {
         {spaceDown
           ? 'Drag to pan'
           : tool === 'select'
-            ? 'Click to select · drag to move · Delete to remove · hold Space to pan'
+            ? 'Click to select · drag empty space to multi-select · right-click for options · Delete to remove'
             : tool === 'rect' || tool === 'ellipse'
               ? 'Drag to draw the shape · hold Shift to keep it square/circular'
               : 'Left-click = corner point (▪) · right-click = curve point (●) · double-click or Enter to finish · Esc to cancel'}
@@ -411,7 +499,11 @@ export default function Canvas() {
         <BackgroundControls />
         <label>
           <input type="checkbox" checked={showStitchPreview} onChange={(e) => setShowStitchPreview(e.target.checked)} />
-          Stitch preview
+          Stitch preview <span className="muted">(T)</span>
+        </label>
+        <label>
+          <input type="checkbox" checked={showCutMarkers} onChange={(e) => setShowCutMarkers(e.target.checked)} />
+          Cut points
         </label>
         <div className="zoom-controls">
           <button onClick={() => setView((v) => ({ ...v, scale: Math.max(0.6, v.scale / 1.2) }))}>−</button>
@@ -419,8 +511,91 @@ export default function Canvas() {
           <button onClick={() => setView((v) => ({ ...v, scale: Math.min(20, v.scale * 1.2) }))}>+</button>
         </div>
       </div>
+      {contextMenu && (
+        <ContextMenu
+          state={contextMenu}
+          onClose={() => setContextMenu(null)}
+          onDuplicate={() => {
+            const newId = makeId();
+            dispatch({ type: 'DUPLICATE_OBJECT', id: contextMenu.obj.id, newId });
+            setSelectedId(newId);
+          }}
+          onDelete={() => {
+            dispatch({ type: 'REMOVE_OBJECT', id: contextMenu.obj.id });
+            setSelectedIds([]);
+          }}
+          onToggleLock={() => dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { locked: !contextMenu.obj.locked } })}
+          onToggleVisible={() => dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { visible: !contextMenu.obj.visible } })}
+          onConvertKind={(kind) =>
+            dispatch({
+              type: 'UPDATE_OBJECT',
+              id: contextMenu.obj.id,
+              patch: { kind, points: pointsForKindChange(contextMenu.obj.kind, kind, contextMenu.obj.points) },
+            })
+          }
+          onSetStartPoint={(vertexIndex) => {
+            const pts = contextMenu.obj.points;
+            const rotated = [...pts.slice(vertexIndex), ...pts.slice(0, vertexIndex)];
+            dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { points: rotated } });
+          }}
+          onReverseDirection={() => {
+            const reversed = [...contextMenu.obj.points].reverse();
+            dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { points: reversed } });
+          }}
+        />
+      )}
     </div>
   );
+}
+
+/** Marks every TRIM (thread cut) in the combined stitch sequence with a small scissor
+ * glyph, and the overall design's first/last stitch with a start/end dot — so it's
+ * visible on the canvas where a cut will happen and where the thread path begins,
+ * before ever exporting or opening the stitch-out preview. */
+function drawCutMarkers(ctx: CanvasRenderingContext2D, stitches: StitchPoint[], toScreen: (p: Point) => Point) {
+  let first: Point | null = null;
+  let last: Point | null = null;
+  for (const s of stitches) {
+    if (s.command === 'STITCH') {
+      if (!first) first = s;
+      last = s;
+    }
+    if (s.command === 'TRIM') {
+      const p = toScreen(s);
+      ctx.font = '13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#c0392b';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = '#c0392b';
+      ctx.fillText('✂', p.x, p.y + 0.5);
+    }
+  }
+  if (first) {
+    const p = toScreen(first);
+    ctx.fillStyle = '#2e9e4f';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  if (last) {
+    const p = toScreen(last);
+    ctx.fillStyle = '#c0392b';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
 }
 
 /** Anchors the drag at `a` and forces `b` so the box is a square (shift-constrain). */

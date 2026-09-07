@@ -1,17 +1,9 @@
 import { useStore } from '../state/store';
-import type { EmbObject, PathPoint, StitchKind, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
+import type { EmbObject, StitchKind, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
 import { autoUnderlayType, normalizeUnderlay } from '../stitching/underlay';
+import { pointsForKindChange } from '../stitching/kindConvert';
 
-/** A fill's points form an implicitly-closed loop (the stitch engine always connects
- * last back to first); a running/satin path doesn't. So converting fill -> outline
- * needs an explicit closing point, or the outline would be missing that final edge. */
-function closeLoop(points: PathPoint[]): PathPoint[] {
-  if (points.length < 2) return points;
-  const first = points[0];
-  const last = points[points.length - 1];
-  const alreadyClosed = Math.hypot(first.x - last.x, first.y - last.y) < 0.01;
-  return alreadyClosed ? points : [...points, { ...first }];
-}
+const KIND_LABELS: Record<StitchKind, string> = { running: 'Running', satin: 'Satin', fill: 'Fill' };
 
 const UNDERLAY_LABELS: Record<UnderlayType, string> = {
   none: 'None',
@@ -155,15 +147,21 @@ export default function PropertiesPanel() {
         <input type="color" value={rgbToHex(obj.color)} onChange={(e) => update({ color: hexToRgb(e.target.value) })} />
       </label>
 
-      {obj.kind === 'fill' ? (
-        <button className="convert-kind-btn" onClick={() => update({ kind: 'running', points: closeLoop(obj.points) })}>
-          Convert to outline
-        </button>
-      ) : (
-        <button className="convert-kind-btn" onClick={() => update({ kind: 'fill' })}>
-          Convert to fill
-        </button>
-      )}
+      <div className="field">
+        <span className="field-label">Stitch type</span>
+        <div className="kind-convert-buttons">
+          {(['running', 'satin', 'fill'] as StitchKind[]).map((k) => (
+            <button
+              key={k}
+              className={obj.kind === k ? 'active' : ''}
+              disabled={obj.kind === k}
+              onClick={() => update({ kind: k, points: pointsForKindChange(obj.kind, k, obj.points) })}
+            >
+              {KIND_LABELS[k]}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {obj.kind === 'running' && (
         <>

@@ -22,7 +22,7 @@ export default function HeaderBar() {
   const doExport = (format: ExportFormat) => {
     setExportError(null);
     try {
-      exportStitchFile(doc.objects, doc.name, format);
+      exportStitchFile(doc.objects, doc.name, format, doc.trimThresholdMm);
     } catch (err) {
       setExportError(err instanceof Error ? err.message : String(err));
     }
@@ -74,6 +74,20 @@ export default function HeaderBar() {
           </option>
         ))}
       </select>
+
+      <label className="trim-threshold" title="Jumps this long or longer get an automatic thread trim">
+        Auto-trim ≥
+        <select
+          value={doc.trimThresholdMm}
+          onChange={(e) => dispatch({ type: 'SET_TRIM_THRESHOLD', mm: parseInt(e.target.value, 10) })}
+        >
+          {Array.from({ length: 10 }, (_, i) => i + 1).map((mm) => (
+            <option key={mm} value={mm}>
+              {mm}mm
+            </option>
+          ))}
+        </select>
+      </label>
 
       <div className="undo-redo-group">
         <button onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)">

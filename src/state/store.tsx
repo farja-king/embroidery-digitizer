@@ -26,6 +26,7 @@ const initialDocument: Document = {
   hoop: HOOP_PRESETS[0],
   objects: [],
   background: null,
+  trimThresholdMm: 3,
 };
 
 type Action =
@@ -36,6 +37,7 @@ type Action =
   | { type: 'REORDER'; fromIndex: number; toIndex: number }
   | { type: 'SET_HOOP'; hoop: HoopSize }
   | { type: 'SET_NAME'; name: string }
+  | { type: 'SET_TRIM_THRESHOLD'; mm: number }
   | { type: 'SET_BACKGROUND'; background: BackgroundImage | null }
   | { type: 'UPDATE_BACKGROUND'; patch: Partial<BackgroundImage> }
   | { type: 'LOAD_DOCUMENT'; document: Document }
@@ -77,12 +79,14 @@ function reducer(state: Document, action: Action): Document {
       return { ...state, hoop: action.hoop };
     case 'SET_NAME':
       return { ...state, name: action.name };
+    case 'SET_TRIM_THRESHOLD':
+      return { ...state, trimThresholdMm: Math.max(1, Math.min(10, action.mm)) };
     case 'SET_BACKGROUND':
       return { ...state, background: action.background };
     case 'UPDATE_BACKGROUND':
       return { ...state, background: state.background ? { ...state.background, ...action.patch } : state.background };
     case 'LOAD_DOCUMENT':
-      return { ...action.document, background: action.document.background ?? null };
+      return { ...action.document, background: action.document.background ?? null, trimThresholdMm: action.document.trimThresholdMm ?? 3 };
     case 'CLEAR':
       return { ...initialDocument, objects: [] };
     default:
@@ -182,6 +186,11 @@ interface StoreValue {
   canRedo: boolean;
   selectedId: string | null;
   setSelectedId: (id: string | null) => void;
+  // The full multi-select set (marquee-drag select on the canvas). selectedId always
+  // tracks the "primary" one (first in the set) for Properties panel editing, which
+  // only ever shows one object's settings at a time. Setting one keeps the other in sync.
+  selectedIds: string[];
+  setSelectedIds: (ids: string[]) => void;
   tool: ToolId;
   setTool: (t: ToolId) => void;
   activeColor: RGB;
@@ -197,7 +206,7 @@ function loadInitial(): Document {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Document;
-      return { ...parsed, background: parsed.background ?? null };
+      return { ...parsed, background: parsed.background ?? null, trimThresholdMm: parsed.trimThresholdMm ?? 3 };
     }
   } catch {
     // ignore corrupt/unavailable storage
@@ -207,7 +216,16 @@ function loadInitial(): Document {
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const { doc, dispatch, undo, redo, canUndo, canRedo } = useHistoryStore(loadInitial());
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedIdRaw] = useState<string | null>(null);
+  const [selectedIds, setSelectedIdsRaw] = useState<string[]>([]);
+  const setSelectedId = useCallback((id: string | null) => {
+    setSelectedIdRaw(id);
+    setSelectedIdsRaw(id ? [id] : []);
+  }, []);
+  const setSelectedIds = useCallback((ids: string[]) => {
+    setSelectedIdsRaw(ids);
+    setSelectedIdRaw(ids[0] ?? null);
+  }, []);
   const [tool, setTool] = useState<ToolId>('select');
   const [activeColor, setActiveColor] = useState<RGB>({ r: 237, g: 23, b: 31 });
 
@@ -221,7 +239,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   return (
     <StoreContext.Provider
-      value={{ doc, dispatch, undo, redo, canUndo, canRedo, selectedId, setSelectedId, tool, setTool, activeColor, setActiveColor }}
+      value={{
+        doc,
+        dispatch,
+        undo,
+        redo,
+        canUndo,
+        canRedo,
+        selectedId,
+        setSelectedId,
+        selectedIds,
+        setSelectedIds,
+        tool,
+        setTool,
+        activeColor,
+        setActiveColor,
+      }}
     >
       {children}
     </StoreContext.Provider>

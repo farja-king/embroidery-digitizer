@@ -117,4 +117,8 @@ export interface Document {
   hoop: HoopSize;
   objects: EmbObject[];
   background: BackgroundImage | null;
+  // mm; a jump between stitches at or beyond this length gets an inserted TRIM
+  // command (thread cut) instead of just traveling as a plain jump stitch. 1-10mm,
+  // user-configurable (Hatch's own default is 3mm, which is this app's default too).
+  trimThresholdMm: number;
 }
