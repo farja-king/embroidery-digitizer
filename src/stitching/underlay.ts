@@ -94,8 +94,24 @@ function edgeRunSatin(centerline: Point[], width: number, spacing: number): Poin
   return [...rail1, ...rail2.reverse()];
 }
 
-function edgeRunFill(polygon: Point[], spacing: number): Point[] {
-  return resamplePath([...polygon, polygon[0]], Math.max(0.4, spacing));
+// Rotates a closed polygon's vertex order so it starts at whichever vertex is
+// nearest `target` -- doesn't change the shape, just where a trace of it begins.
+function rotateToNearest(polygon: Point[], target: Point): Point[] {
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < polygon.length; i++) {
+    const d = dist(polygon[i], target);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best === 0 ? polygon : [...polygon.slice(best), ...polygon.slice(0, best)];
+}
+
+function edgeRunFill(polygon: Point[], spacing: number, entryPoint: Point | null): Point[] {
+  const start = entryPoint ? rotateToNearest(polygon, entryPoint) : polygon;
+  return resamplePath([...start, start[0]], Math.max(0.4, spacing));
 }
 
 function zigzag(
@@ -160,29 +176,36 @@ export function satinUnderlay(centerline: Point[], width: number, settings: Unde
 
 /** Generates the underlay pass for a fill area. `polygon` is the (already
  * curve-flattened, closed) outline. `topAngle` is the fill's own top-stitch angle,
- * so tatami underlay can run perpendicular to it as is standard practice. */
-export function fillUnderlay(polygon: Point[], topAngle: number, settings: UnderlaySettings, type: UnderlayType): Point[] {
+ * so tatami underlay can run perpendicular to it as is standard practice.
+ * `entryPoint`, when the user has dragged an explicit start point onto this
+ * object, rotates any perimeter-trace pass (edge-run, or the one auto-added
+ * under tatami/double-tatami) to begin at the nearest vertex to it, instead of
+ * always the outline's first point regardless of where stitching should enter —
+ * otherwise the entry bridge in fillStitches has to walk however much of the
+ * perimeter separates the two, even after the top-stitch scan direction itself
+ * is already correctly optimized. */
+export function fillUnderlay(polygon: Point[], topAngle: number, settings: UnderlaySettings, type: UnderlayType, entryPoint: Point | null = null): Point[] {
   if (type === 'none' || polygon.length < 3) return [];
   const inset = offsetPolygon(polygon, -UNDERLAY_INSET_MM);
   const spacing = settings.spacing;
   switch (type) {
     case 'center-run':
-      return centerRun(inset, true, spacing);
+      return centerRun(entryPoint ? rotateToNearest(inset, entryPoint) : inset, true, spacing);
     case 'edge-run':
-      return edgeRunFill(inset, spacing);
+      return edgeRunFill(inset, spacing, entryPoint);
     case 'tatami':
       // A scanline fill only touches two of the four sides at each row's endpoint —
       // it never actually walks along the other two, which is exactly the "gap" a
       // plain tatami underlay leaves at the perimeter. Adding the perimeter trace
       // here (rather than requiring the user to add it as a separate Underlay 2
       // pass) makes "tatami" mean fully-stabilized-including-the-edge by default.
-      return [...edgeRunFill(inset, spacing), ...tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5)];
+      return [...edgeRunFill(inset, spacing, entryPoint), ...tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5)];
     case 'double-tatami': {
       // One pass perpendicular to the top stitching, one parallel to it -- a crossed
       // grid (horizontal one way, vertical the other), not the same direction twice.
       const passA = tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5);
       const passB = tatamiRows(inset, topAngle, spacing, spacing * 1.5);
-      return [...edgeRunFill(inset, spacing), ...passA, ...passB];
+      return [...edgeRunFill(inset, spacing, entryPoint), ...passA, ...passB];
     }
     // zigzag/double-zigzag are a column (satin) concept -- an angled bounce stitch --
     // not a fill one; there's no UI path to select them for a fill, but old saved data

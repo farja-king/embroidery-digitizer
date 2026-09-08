@@ -72,7 +72,6 @@ function fillStitches(
 ): StitchPoint[] {
   if (polygon.length < 3) return [];
   const out: StitchPoint[] = [];
-  for (const p of underlayPts) out.push({ x: p.x, y: p.y, command: 'STITCH' });
   // Dense fill stitching pulls the fabric in toward the shape's center, so the top
   // layer is generated slightly past the digitized outline to come out true-to-size
   // on fabric — the underlay above deliberately stays on the original boundary
@@ -101,6 +100,26 @@ function fillStitches(
     const shouldReverse = optimizingForEnd ? distFirst < distLast : distLast < distFirst;
     if (shouldReverse) rows.reverse();
   }
+  // The underlay is a there-and-back trip: it starts at the entry point, delivers
+  // out to the far side, and returns -- so it always ends back at (or very near)
+  // the start point. The top layer picks up from exactly there and scans across,
+  // finishing near the end point (already chosen above by picking whichever scan
+  // direction lands its natural finish closest to the target). What's bridged
+  // here is only the handoff in between: wherever the underlay actually left off
+  // (or the bare start point, if there's no underlay) to wherever the top-layer
+  // scan actually begins.
+  const entry = underlayPts.length ? underlayPts[underlayPts.length - 1] : startPoint;
+  const topFirst = rows[0];
+  if (!underlayPts.length && startPoint) {
+    out.push({ x: startPoint.x, y: startPoint.y, command: 'STITCH' });
+  } else {
+    for (const p of underlayPts) out.push({ x: p.x, y: p.y, command: 'STITCH' });
+  }
+  if (entry && topFirst && (Math.abs(entry.x - topFirst.x) > 0.05 || Math.abs(entry.y - topFirst.y) > 0.05)) {
+    for (const p of perimeterBridge(polygon, entry, topFirst, Math.max(0.4, stitchLength))) {
+      out.push({ x: p.x, y: p.y, command: 'STITCH' });
+    }
+  }
   for (const p of rows) out.push({ x: p.x, y: p.y, command: 'STITCH' });
   // The scan naturally finishes wherever the last row happens to end -- if the user
   // dragged the end marker somewhere else (to line up with the next same-color
@@ -112,19 +131,6 @@ function fillStitches(
     for (const p of perimeterBridge(expanded, lastRowPoint, endPoint, Math.max(0.4, stitchLength))) {
       out.push({ x: p.x, y: p.y, command: 'STITCH' });
     }
-  }
-  // Same idea at the front: the scan (or underlay, if it runs first) naturally
-  // begins wherever it begins -- rotating the outline's own points changes that
-  // only incidentally. An explicit start point gets its own bridge walked
-  // backwards from wherever generation actually starts, so this object's very
-  // first stitch is exactly where the user put it (e.g. matching the end point of
-  // whatever same-color shape stitches right before this one).
-  const naturalFirst = out[0];
-  if (startPoint && naturalFirst && (Math.abs(naturalFirst.x - startPoint.x) > 0.05 || Math.abs(naturalFirst.y - startPoint.y) > 0.05)) {
-    const bridge = perimeterBridge(polygon, startPoint, naturalFirst, Math.max(0.4, stitchLength));
-    const lead: StitchPoint[] = [{ x: startPoint.x, y: startPoint.y, command: 'STITCH' }];
-    for (const p of bridge.slice(0, -1)) lead.push({ x: p.x, y: p.y, command: 'STITCH' });
-    out.unshift(...lead);
   }
   return out;
 }
@@ -143,7 +149,7 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
     }
     case 'fill': {
       const underlayPts = resolveUnderlay(obj, obj.fill.underlay, (settings, type) =>
-        fillUnderlay(flat, obj.fill.angle, settings, type),
+        fillUnderlay(flat, obj.fill.angle, settings, type, obj.fill.startPoint ?? null),
       );
       return fillStitches(
         flat,
