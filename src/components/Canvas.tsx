@@ -217,21 +217,35 @@ export default function Canvas() {
     [view.scale],
   );
 
+  // Fill objects can have an explicit start/end that's independent of the outline's
+  // own point order (see fill.startPoint/endPoint) -- everywhere the marker actually
+  // *is* needs to agree, so this is the one place that decides it: the override
+  // when set, else the outline's first/last point same as every other kind.
+  const getMarkerPositions = useCallback((obj: EmbObject): { start: Point; end: Point } | null => {
+    if (obj.points.length < 2) return null;
+    if (obj.kind === 'fill') {
+      return {
+        start: obj.fill.startPoint ?? obj.points[0],
+        end: obj.fill.endPoint ?? obj.points[obj.points.length - 1],
+      };
+    }
+    return { start: obj.points[0], end: obj.points[obj.points.length - 1] };
+  }, []);
+
   // The start/end markers (green/red dots) sit exactly on the object's own first
   // and last point, same as two of its vertex handles — hit-tested with the same
   // radius so grabbing one among a dense cluster of ordinary vertices/stitch dots
   // still reliably lands on the marker, not a neighboring point.
   const getEndpointMarkerAt = useCallback(
     (p: Point, obj: EmbObject): 'start' | 'end' | null => {
-      if (obj.points.length < 2) return null;
+      const markers = getMarkerPositions(obj);
+      if (!markers) return null;
       const thresholdMm = VERTEX_HIT_PX / view.scale;
-      const start = obj.points[0];
-      const end = obj.points[obj.points.length - 1];
-      if (Math.hypot(start.x - p.x, start.y - p.y) < thresholdMm) return 'start';
-      if (Math.hypot(end.x - p.x, end.y - p.y) < thresholdMm) return 'end';
+      if (Math.hypot(markers.start.x - p.x, markers.start.y - p.y) < thresholdMm) return 'start';
+      if (Math.hypot(markers.end.x - p.x, markers.end.y - p.y) < thresholdMm) return 'end';
       return null;
     },
-    [view.scale],
+    [view.scale, getMarkerPositions],
   );
 
   const nearestVertexIndex = (p: Point, points: PathPoint[]): number => {
@@ -445,15 +459,16 @@ export default function Canvas() {
         const pts = obj.points;
         const n = pts.length;
         if (obj.kind === 'fill') {
-          // A closed loop's shape is unchanged by rotation, so any vertex can
-          // freely become the new start/end -- same rotation math as the context
-          // menu's Set as start/end point, just driven live by the drag position.
+          // Fully independent: either marker can land on any vertex, including
+          // the same one the other marker is already on ("start and stop at the
+          // same point"), unlike an open path where the two ends are fixed. The
+          // engine bridges from wherever the fill's own scan naturally starts/
+          // ends to this exact point, walking the shape's edge (see fillStitches),
+          // so this is a real target position, not just a hint.
           const targetIndex = nearestVertexIndex(p, pts);
-          const rotateBy = drag.which === 'start' ? targetIndex : (targetIndex + 1) % n;
-          if (rotateBy !== 0) {
-            const rotated = [...pts.slice(rotateBy), ...pts.slice(0, rotateBy)];
-            dispatch({ type: 'UPDATE_OBJECT', id: drag.id, patch: { points: rotated } });
-          }
+          const target = { x: pts[targetIndex].x, y: pts[targetIndex].y };
+          const patch = drag.which === 'start' ? { startPoint: target } : { endPoint: target };
+          dispatch({ type: 'UPDATE_OBJECT', id: drag.id, patch: { fill: { ...obj.fill, ...patch } } });
         } else {
           // An open path's point order *is* its shape -- only the two actual
           // endpoints are valid start/end positions. Dragging past the midpoint
@@ -770,9 +785,10 @@ export default function Canvas() {
     // start/end that happens to land right at a trim is never hidden underneath one.
     if (tool === 'select' && !drawingPoints) {
       const selectedObj = doc.objects.find((o) => o.id === selectedId);
-      if (selectedObj && selectedObj.visible && selectedObj.points.length >= 2) {
-        const startPt = toScreen(selectedObj.points[0]);
-        const endPt = toScreen(selectedObj.points[selectedObj.points.length - 1]);
+      const markers = selectedObj && selectedObj.visible ? getMarkerPositions(selectedObj) : null;
+      if (markers) {
+        const startPt = toScreen(markers.start);
+        const endPt = toScreen(markers.end);
         const drawMarker = (pt: Point, fill: string, hovered: boolean) => {
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, hovered ? 7 : 5.5, 0, Math.PI * 2);
@@ -825,7 +841,7 @@ export default function Canvas() {
       ctx.setLineDash([]);
       for (const p of drawingPoints) drawVertexMarker(ctx, toScreen(p), p.type, '#2f6fed', '#2f6fed');
     }
-  }, [doc, view, size, selectedIds, selectedId, showStitchPreview, drawingPoints, mousePos, toScreen, bgImg, cutMarkerPattern, tool, selectionBBox, hoveredEndpoint]);
+  }, [doc, view, size, selectedIds, selectedId, showStitchPreview, drawingPoints, mousePos, toScreen, bgImg, cutMarkerPattern, tool, selectionBBox, hoveredEndpoint, getMarkerPositions]);
 
   const cursor = spaceDown
     ? activeDrag?.kind === 'pan'
@@ -909,21 +925,23 @@ export default function Canvas() {
             })
           }
           onSetStartPoint={(vertexIndex) => {
-            const pts = contextMenu.obj.points;
-            const rotated = [...pts.slice(vertexIndex), ...pts.slice(0, vertexIndex)];
-            dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { points: rotated } });
+            // Same explicit-point mechanism the draggable marker uses (see
+            // fillStitches' start bridge) -- not a rotation, since rotating the
+            // outline doesn't actually change where the row-scan begins.
+            const v = contextMenu.obj.points[vertexIndex];
+            dispatch({
+              type: 'UPDATE_OBJECT',
+              id: contextMenu.obj.id,
+              patch: { fill: { ...contextMenu.obj.fill, startPoint: { x: v.x, y: v.y } } },
+            });
           }}
           onSetEndPoint={(vertexIndex) => {
-            // A closed loop's start and end are linked (end is always whichever
-            // point comes right before start) -- "set as end" is just a more
-            // convenient entry point for the same rotation, anchored from the
-            // other side: rotate so this vertex lands at the *last* index instead
-            // of computing "the point after it" yourself and using Set as start.
-            const pts = contextMenu.obj.points;
-            const n = pts.length;
-            const rotateBy = (vertexIndex + 1) % n;
-            const rotated = [...pts.slice(rotateBy), ...pts.slice(0, rotateBy)];
-            dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { points: rotated } });
+            const v = contextMenu.obj.points[vertexIndex];
+            dispatch({
+              type: 'UPDATE_OBJECT',
+              id: contextMenu.obj.id,
+              patch: { fill: { ...contextMenu.obj.fill, endPoint: { x: v.x, y: v.y } } },
+            });
           }}
           onReverseDirection={() => {
             const reversed = [...contextMenu.obj.points].reverse();

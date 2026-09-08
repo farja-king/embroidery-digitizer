@@ -20,7 +20,15 @@ export function defaultObject(kind: StitchKind, points: PathPoint[], color: RGB)
     locked: false,
     running: { stitchLength: 2.5, triple: false },
     satin: { width: 3, density: 0.4, underlay: defaultTwoPassUnderlay('zigzag'), pullCompensation: 0.2 },
-    fill: { angle: 0, rowSpacing: 0.4, stitchLength: 3, underlay: defaultTwoPassUnderlay('tatami'), pullCompensation: 0.3 },
+    fill: {
+      angle: 0,
+      rowSpacing: 0.4,
+      stitchLength: 3,
+      underlay: defaultTwoPassUnderlay('tatami'),
+      pullCompensation: 0.3,
+      startPoint: null,
+      endPoint: null,
+    },
   };
 }
 
@@ -357,8 +365,16 @@ function loadInitial(): Document {
           if (o.kind === 'satin' && o.satin.pullCompensation === undefined) {
             return { ...o, satin: { ...o.satin, pullCompensation: 0.2 } };
           }
-          if (o.kind === 'fill' && o.fill.pullCompensation === undefined) {
-            return { ...o, fill: { ...o.fill, pullCompensation: 0.3 } };
+          if (o.kind === 'fill' && (o.fill.pullCompensation === undefined || o.fill.startPoint === undefined || o.fill.endPoint === undefined)) {
+            return {
+              ...o,
+              fill: {
+                ...o.fill,
+                pullCompensation: o.fill.pullCompensation ?? 0.3,
+                startPoint: o.fill.startPoint ?? null,
+                endPoint: o.fill.endPoint ?? null,
+              },
+            };
           }
           return o;
         }),

@@ -88,6 +88,16 @@ export interface FillParams {
   // covers them — the two together read as a clean edge instead of the ragged
   // look of both layers' stitches landing at slightly different boundaries.
   pullCompensation: number;
+  // Explicit first/final needle position, independent of wherever the row-scan
+  // pattern would naturally start/finish -- set by dragging the start (green) /
+  // end (red) marker on canvas. null/undefined means "wherever the scan naturally
+  // starts/ends" (the original, pre-this-feature behavior). When set, the engine
+  // adds a short bridge stitch walking the shape's own edge between this point and
+  // the scan's natural start/finish, so two same-color shapes can be lined up
+  // end-to-start for continuous, no-trim stitching instead of always landing
+  // wherever the scan happens to begin/stop.
+  startPoint: Point | null;
+  endPoint: Point | null;
 }
 
 export interface EmbObject {

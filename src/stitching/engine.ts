@@ -1,5 +1,5 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { flattenPath, normalAt, offsetPolygon, resamplePath, tatamiRows } from './geometry';
+import { flattenPath, normalAt, offsetPolygon, perimeterBridge, resamplePath, tatamiRows } from './geometry';
 import { autoUnderlayType, fillUnderlay, normalizeUnderlay, satinUnderlay } from './underlay';
 
 /** Runs both underlay passes and concatenates their stitches, pass 1 then pass 2.
@@ -67,6 +67,8 @@ function fillStitches(
   stitchLength: number,
   underlayPts: Point[],
   pullCompensation: number,
+  startPoint: Point | null,
+  endPoint: Point | null,
 ): StitchPoint[] {
   if (polygon.length < 3) return [];
   const out: StitchPoint[] = [];
@@ -76,8 +78,31 @@ function fillStitches(
   // on fabric — the underlay above deliberately stays on the original boundary
   // (actually inset from it), so it can never poke out past this expanded edge.
   const expanded = offsetPolygon(polygon, Math.max(0, pullCompensation));
-  for (const p of tatamiRows(expanded, angle, rowSpacing, stitchLength)) {
-    out.push({ x: p.x, y: p.y, command: 'STITCH' });
+  const rows = tatamiRows(expanded, angle, rowSpacing, stitchLength);
+  for (const p of rows) out.push({ x: p.x, y: p.y, command: 'STITCH' });
+  // The scan naturally finishes wherever the last row happens to end -- if the user
+  // dragged the end marker somewhere else (to line up with the next same-color
+  // shape's start, say), bridge there along the shape's own edge instead of leaving
+  // it wherever the scan stopped, so buildPattern's jump from here is short and
+  // deliberate rather than a straight line back across the shape's interior.
+  const lastRowPoint = rows[rows.length - 1];
+  if (endPoint && lastRowPoint && (Math.abs(lastRowPoint.x - endPoint.x) > 0.05 || Math.abs(lastRowPoint.y - endPoint.y) > 0.05)) {
+    for (const p of perimeterBridge(expanded, lastRowPoint, endPoint, Math.max(0.4, stitchLength))) {
+      out.push({ x: p.x, y: p.y, command: 'STITCH' });
+    }
+  }
+  // Same idea at the front: the scan (or underlay, if it runs first) naturally
+  // begins wherever it begins -- rotating the outline's own points changes that
+  // only incidentally. An explicit start point gets its own bridge walked
+  // backwards from wherever generation actually starts, so this object's very
+  // first stitch is exactly where the user put it (e.g. matching the end point of
+  // whatever same-color shape stitches right before this one).
+  const naturalFirst = out[0];
+  if (startPoint && naturalFirst && (Math.abs(naturalFirst.x - startPoint.x) > 0.05 || Math.abs(naturalFirst.y - startPoint.y) > 0.05)) {
+    const bridge = perimeterBridge(polygon, startPoint, naturalFirst, Math.max(0.4, stitchLength));
+    const lead: StitchPoint[] = [{ x: startPoint.x, y: startPoint.y, command: 'STITCH' }];
+    for (const p of bridge.slice(0, -1)) lead.push({ x: p.x, y: p.y, command: 'STITCH' });
+    out.unshift(...lead);
   }
   return out;
 }
@@ -98,7 +123,16 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
       const underlayPts = resolveUnderlay(obj, obj.fill.underlay, (settings, type) =>
         fillUnderlay(flat, obj.fill.angle, settings, type),
       );
-      return fillStitches(flat, obj.fill.angle, obj.fill.rowSpacing, obj.fill.stitchLength, underlayPts, obj.fill.pullCompensation ?? 0);
+      return fillStitches(
+        flat,
+        obj.fill.angle,
+        obj.fill.rowSpacing,
+        obj.fill.stitchLength,
+        underlayPts,
+        obj.fill.pullCompensation ?? 0,
+        obj.fill.startPoint ?? null,
+        obj.fill.endPoint ?? null,
+      );
     }
     default:
       return [];

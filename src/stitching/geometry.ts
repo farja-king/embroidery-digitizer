@@ -152,6 +152,77 @@ export function offsetPolygon(polygon: Point[], amount: number): Point[] {
   });
 }
 
+/** Nearest point on a closed loop's perimeter to `p`, as an arc-length distance
+ * ("t") walked from loop[0], plus the projected point itself. */
+function nearestOnLoop(p: Point, loop: Point[]): { t: number; point: Point } {
+  let bestT = 0;
+  let bestPoint = loop[0];
+  let bestDist = Infinity;
+  let acc = 0;
+  for (let i = 0; i < loop.length - 1; i++) {
+    const a = loop[i];
+    const b = loop[i + 1];
+    const segLen = dist(a, b);
+    if (segLen > 0) {
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (segLen * segLen);
+      t = Math.max(0, Math.min(1, t));
+      const proj = { x: a.x + dx * t, y: a.y + dy * t };
+      const d = dist(p, proj);
+      if (d < bestDist) {
+        bestDist = d;
+        bestT = acc + t * segLen;
+        bestPoint = proj;
+      }
+    }
+    acc += segLen;
+  }
+  return { t: bestT, point: bestPoint };
+}
+
+function pointAtT(loop: Point[], t: number): Point {
+  let acc = 0;
+  for (let i = 0; i < loop.length - 1; i++) {
+    const a = loop[i];
+    const b = loop[i + 1];
+    const segLen = dist(a, b);
+    if (t <= acc + segLen || i === loop.length - 2) {
+      const localT = segLen > 0 ? (t - acc) / segLen : 0;
+      const clamped = Math.max(0, Math.min(1, localT));
+      return { x: a.x + (b.x - a.x) * clamped, y: a.y + (b.y - a.y) * clamped };
+    }
+    acc += segLen;
+  }
+  return loop[loop.length - 1];
+}
+
+/** Walks a closed polygon's own perimeter from wherever `from` lands on it to
+ * wherever `to` lands, in whichever direction around the loop is shorter, resampled
+ * at `step`. Used to connect a fill's natural scan-finish point to a start/end the
+ * user chose that the scan doesn't land on by itself — a short, edge-hugging bridge
+ * instead of a straight line cutting across the shape's interior. */
+export function perimeterBridge(polygon: Point[], from: Point, to: Point, step: number): Point[] {
+  if (polygon.length < 3) return [to];
+  const loop = [...polygon, polygon[0]];
+  const total = pathLength(loop);
+  if (total < 1e-6) return [to];
+  const a = nearestOnLoop(from, loop);
+  const b = nearestOnLoop(to, loop);
+  const forwardLen = ((b.t - a.t) % total + total) % total;
+  const backwardLen = total - forwardLen;
+  const forward = forwardLen <= backwardLen;
+  const span = forward ? forwardLen : backwardLen;
+  const steps = Math.max(1, Math.round(span / Math.max(0.2, step)));
+  const out: Point[] = [];
+  for (let i = 1; i <= steps; i++) {
+    const t = forward ? (a.t + (span * i) / steps) % total : ((a.t - (span * i) / steps) % total + total) % total;
+    out.push(pointAtT(loop, t));
+  }
+  out.push(to);
+  return out;
+}
+
 export function rotatePoint(p: Point, origin: Point, angleDeg: number): Point {
   const a = (angleDeg * Math.PI) / 180;
   const cos = Math.cos(a);
