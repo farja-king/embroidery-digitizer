@@ -12,6 +12,8 @@ export default function TextModal({ color, onClose }: { color: RGB; onClose: () 
   const [sizeMm, setSizeMm] = useState(20);
   const [x, setX] = useState(Math.round(doc.hoop.width / 2 - 20));
   const [y, setY] = useState(Math.round(doc.hoop.height / 2));
+  const [stitchStyle, setStitchStyle] = useState<'satin-auto' | 'fill'>('satin-auto');
+  const [underlayMode, setUnderlayMode] = useState<'auto' | 'none'>('auto');
   const [loadingFonts, setLoadingFonts] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [building, setBuilding] = useState(false);
@@ -50,7 +52,7 @@ export default function TextModal({ color, onClose }: { color: RGB; onClose: () 
     setError(null);
     try {
       const font = await selectedFont.load();
-      const objects = textToObjects({ text, font, sizeMm, x, y, color });
+      const objects = textToObjects({ text, font, sizeMm, x, y, color, stitchStyle, underlayMode });
       if (objects.length === 0) {
         setError('That text produced no stitchable shapes (font may be missing those glyphs).');
         return;
@@ -130,11 +132,29 @@ export default function TextModal({ color, onClose }: { color: RGB; onClose: () 
           </label>
         </div>
 
+        <label className="field">
+          Stitch type
+          <select value={stitchStyle} onChange={(e) => setStitchStyle(e.target.value as 'satin-auto' | 'fill')}>
+            <option value="satin-auto">Satin (auto — fill only where a letter can't be one clean stroke)</option>
+            <option value="fill">Fill (every letter, regardless of shape)</option>
+          </select>
+        </label>
+
+        <label className="field">
+          Underlay
+          <select value={underlayMode} onChange={(e) => setUnderlayMode(e.target.value as 'auto' | 'none')}>
+            <option value="auto">Auto (same default every other shape gets)</option>
+            <option value="none">None</option>
+          </select>
+        </label>
+
         <p className="muted small">
-          Letters are digitized as fill shapes with correctly cut-out counters (the holes in "O", "A", "B", …), using
-          the real outline of whichever font you pick. Stitch angle is set per letter as a reasonable default — for
-          full control (or true satin lettering), select a letter afterward and adjust its stitch settings like any
-          other shape.
+          Letters use the real outline of whichever font you pick, with correctly cut-out counters (the holes in
+          "O", "A", "B", …). In "Satin" mode, each letter is tried as one continuous satin column following its own
+          curve — straight and round strokes usually satin cleanly; strongly curved open strokes ("C", "S") and
+          anything with a branch (a joint like "A", "E", "T", …) safely fall back to fill rather than risk a
+          distorted column. Every generated letter is a normal shape afterward — select one to fine-tune its angle,
+          width, underlay, or convert it by hand.
         </p>
 
         {error && <p className="text-modal-error">{error}</p>}

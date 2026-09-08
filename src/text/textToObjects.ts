@@ -1,7 +1,8 @@
 import type * as opentype from 'opentype.js';
 import { dist, pointInPolygon, polygonArea } from '../stitching/geometry';
 import { defaultObject, makeId } from '../state/store';
-import type { EmbObject, PathPoint, Point, RGB } from '../types';
+import { ribbonToSatin, ringToSatin } from './letterToSatin';
+import type { EmbObject, PathPoint, Point, RGB, UnderlaySettings } from '../types';
 
 const CURVE_SEGMENTS = 8; // per bezier curve -- plenty smooth at typical lettering sizes
 
@@ -102,13 +103,19 @@ function spliceHole(outer: Point[], hole: Point[]): Point[] {
   return [...outer.slice(0, ai + 1), ...holeRotated, ...outer.slice(ai)];
 }
 
-/** Converts one glyph's raw contours into one or more simple (hole-free, via
- * keyhole splicing) polygons -- normally one, but letters like "i" or "%" have
- * genuinely disconnected islands that become separate polygons/objects since
- * there's no shared boundary to splice them onto. */
-function contoursToPolygons(contours: Point[][]): Point[][] {
+interface ContourIsland {
+  outer: Point[];
+  holes: Point[][];
+}
+
+/** Groups a glyph's raw contours into islands -- an outer boundary plus
+ * whichever holes fall inside it (a letter can have more than one island, e.g.
+ * "%" or "i"'s separate dot). This is the shared first step for both the fill
+ * path (splice every hole into its outer) and the satin path (a hole-free
+ * island tries as a ribbon; an island with exactly one hole tries as a ring). */
+function groupContours(contours: Point[][]): ContourIsland[] {
   if (contours.length === 0) return [];
-  if (contours.length === 1) return [contours[0]];
+  if (contours.length === 1) return [{ outer: contours[0], holes: [] }];
 
   const withArea = contours.map((c) => ({ points: c, area: polygonArea(c) }));
   // TrueType/OpenType winding convention: within one glyph, holes wind opposite
@@ -120,15 +127,21 @@ function contoursToPolygons(contours: Point[][]): Point[][] {
   const outers = withArea.filter((c) => Math.sign(c.area) === majoritySign || c.area === 0).map((c) => c.points);
   const holes = withArea.filter((c) => Math.sign(c.area) !== majoritySign && c.area !== 0).map((c) => c.points);
 
-  const polygons = outers.map((o) => [...o]);
+  const islands: ContourIsland[] = outers.map((o) => ({ outer: o, holes: [] }));
   for (const hole of holes) {
     // Which outer island actually contains this hole -- matters once a glyph
     // has more than one outer part (e.g. "%").
-    const targetIndex = polygons.findIndex((o) => pointInPolygon(hole[0], o));
-    const idx = targetIndex === -1 ? 0 : targetIndex;
-    polygons[idx] = spliceHole(polygons[idx], hole);
+    const targetIndex = islands.findIndex((isl) => pointInPolygon(hole[0], isl.outer));
+    islands[targetIndex === -1 ? 0 : targetIndex].holes.push(hole);
   }
-  return polygons;
+  return islands;
+}
+
+/** Splices every hole of an island into its outer, producing one simple
+ * hole-free polygon for a plain Fill object -- the fallback path whenever
+ * satin conversion isn't attempted or doesn't hold up as a clean stroke. */
+function islandToFillPolygon(island: ContourIsland): Point[] {
+  return island.holes.reduce((outer, hole) => spliceHole(outer, hole), island.outer);
 }
 
 /** A rough per-glyph stitch-angle heuristic: fill rows run along whichever axis
@@ -153,15 +166,36 @@ export interface TextLayoutOptions {
   y: number; // design-space mm, baseline
   color: RGB;
   letterSpacingMm?: number; // extra gap added after each glyph's own advance width
+  // 'satin-auto' (default) tries a satin column for every simple, non-branching
+  // stroke (most letters, or islands within one -- the round part of an "a" and
+  // its stem can each satin even if handled independently) and only falls back
+  // to a fill polygon where the shape genuinely can't be read as one clean
+  // stroke (branching letters like "A"/"E"/"T", or multi-hole islands). 'fill'
+  // skips satin entirely -- appropriate for some designs regardless of letter
+  // shape, per the user's own call.
+  stitchStyle?: 'satin-auto' | 'fill';
+  // Applied to pass 1 of whichever kind each resulting object ends up being
+  // (satin or fill) -- same underlay choice available to every other element,
+  // set once for the whole string instead of per letter.
+  underlayMode?: 'auto' | 'none';
+}
+
+function applyUnderlayMode(obj: EmbObject, mode: 'auto' | 'none' | undefined): void {
+  if (mode !== 'none') return; // 'auto' is defaultObject()'s own default already
+  const none: UnderlaySettings = { mode: 'manual', type: 'none', spacing: 2.5 };
+  if (obj.kind === 'satin') obj.satin.underlay = { pass1: none, pass2: none };
+  else obj.fill.underlay = { pass1: none, pass2: none };
 }
 
 /** Lays out a string with the given font at the given size/position and returns
- * one Fill EmbObject per simple polygon (a glyph is usually one object; a glyph
- * with disconnected islands like "i" or "%" becomes more than one). Uses the
- * font's own glyph outlines and kerning table via opentype.js -- real digitized
+ * one EmbObject per glyph island (a glyph is usually one object; a glyph with
+ * disconnected islands like "i" or "%" becomes more than one) -- satin where
+ * the island reads as a clean single stroke, fill otherwise. Uses the font's
+ * own glyph outlines and kerning table via opentype.js -- real digitized
  * shapes, not an approximation. */
 export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
   const { text, font, sizeMm, x, y, color } = opts;
+  const stitchStyle = opts.stitchStyle ?? 'satin-auto';
   const scale = sizeMm / font.unitsPerEm;
   const letterSpacing = opts.letterSpacingMm ?? 0;
   const glyphs = font.stringToGlyphs(text);
@@ -175,15 +209,34 @@ export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
       cursorX += kerning * scale;
     }
     const path = glyph.getPath(cursorX, y, sizeMm);
-    const contours = pathToContours(path);
-    const polygons = contoursToPolygons(contours);
-    for (const poly of polygons) {
-      if (poly.length < 3) continue;
-      const points: PathPoint[] = poly.map((p) => ({ x: p.x, y: p.y, type: 'corner' }));
-      const obj = defaultObject('fill', points, color);
+    const islands = groupContours(pathToContours(path));
+    for (const island of islands) {
+      if (island.outer.length < 3) continue;
+
+      const satin =
+        stitchStyle === 'satin-auto'
+          ? island.holes.length === 0
+            ? ribbonToSatin(island.outer)
+            : island.holes.length === 1
+              ? ringToSatin(island.outer, island.holes[0])
+              : null
+          : null;
+
+      let obj: EmbObject;
+      if (satin) {
+        const points: PathPoint[] = satin.centerline.map((p) => ({ x: p.x, y: p.y, type: 'corner' }));
+        obj = defaultObject('satin', points, color);
+        obj.satin.width = satin.width;
+      } else {
+        const poly = islandToFillPolygon(island);
+        if (poly.length < 3) continue;
+        const points: PathPoint[] = poly.map((p) => ({ x: p.x, y: p.y, type: 'corner' }));
+        obj = defaultObject('fill', points, color);
+        obj.fill.angle = estimateAngle(poly);
+      }
       obj.id = makeId();
       obj.name = `Text "${text}"`;
-      obj.fill.angle = estimateAngle(poly);
+      applyUnderlayMode(obj, opts.underlayMode);
       objects.push(obj);
     }
     cursorX += (glyph.advanceWidth ?? 0) * scale + letterSpacing;
