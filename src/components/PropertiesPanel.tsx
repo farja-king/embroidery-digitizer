@@ -210,7 +210,11 @@ function boundsOf(obj: EmbObject) {
 // that applies once and reads back as 0, not a live absolute-angle display.
 function TransformFields({ obj, update }: { obj: EmbObject; update: (patch: Partial<EmbObject>) => void }) {
   const box = boundsOf(obj);
+  const [lockAspect, setLockAspect] = useState(false);
 
+  const applyScale = (scaleX: number, scaleY: number) => {
+    update({ points: obj.points.map((p) => ({ ...p, x: box.minX + (p.x - box.minX) * scaleX, y: box.minY + (p.y - box.minY) * scaleY })) });
+  };
   const applyTransform = (fn: (p: { x: number; y: number }) => { x: number; y: number }) => {
     update({ points: obj.points.map((p) => ({ ...p, ...fn(p) })) });
   };
@@ -250,7 +254,7 @@ function TransformFields({ obj, update }: { obj: EmbObject; update: (patch: Part
           onChange={(v) => {
             if (box.width < 1e-6 || v <= 0) return;
             const scaleX = v / box.width;
-            applyTransform((p) => ({ x: box.minX + (p.x - box.minX) * scaleX, y: p.y }));
+            applyScale(scaleX, lockAspect && box.height > 1e-6 ? scaleX : 1);
           }}
         />
         <NumberField
@@ -262,10 +266,14 @@ function TransformFields({ obj, update }: { obj: EmbObject; update: (patch: Part
           onChange={(v) => {
             if (box.height < 1e-6 || v <= 0) return;
             const scaleY = v / box.height;
-            applyTransform((p) => ({ x: p.x, y: box.minY + (p.y - box.minY) * scaleY }));
+            applyScale(lockAspect && box.width > 1e-6 ? scaleY : 1, scaleY);
           }}
         />
       </div>
+      <label className="field row lock-aspect-row">
+        <input type="checkbox" checked={lockAspect} onChange={(e) => setLockAspect(e.target.checked)} />
+        🔗 Lock width/height proportions
+      </label>
       <NumberField
         label="Rotate by (°)"
         value={0}
