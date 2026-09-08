@@ -304,7 +304,7 @@ const ALIGN_BUTTONS: { mode: AlignMode; label: string; title: string }[] = [
 ];
 
 export default function PropertiesPanel() {
-  const { doc, dispatch, selectedId, selectedIds } = useStore();
+  const { doc, dispatch, selectedId, selectedIds, guideLineFor, setGuideLineFor } = useStore();
 
   if (selectedIds.length > 1) {
     return (
@@ -465,6 +465,32 @@ export default function PropertiesPanel() {
             />
             Bridge straight through interior (vs around the edge)
           </label>
+          <div className="field row" style={{ gap: 6 }}>
+            {guideLineFor === obj.id ? (
+              <button type="button" className="secondary-btn" style={{ flex: 1 }} onClick={() => setGuideLineFor(null)}>
+                Click points on canvas, then Enter (Esc to cancel)
+              </button>
+            ) : (
+              <button type="button" className="secondary-btn" style={{ flex: 1 }} onClick={() => setGuideLineFor(obj.id)}>
+                {obj.fill.guideLine ? 'Redraw angle guide line' : 'Draw angle guide line'}
+              </button>
+            )}
+            {obj.fill.guideLine && (
+              <button
+                type="button"
+                className="secondary-btn"
+                title="Remove the guide line — rows go back to using the fixed Angle above"
+                onClick={() => update({ fill: { ...obj.fill, guideLine: null } })}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <p className="muted small">
+            A guide line makes rows follow a hand-drawn curve instead of the fixed angle above — draw it across the
+            shape roughly the way you want the grain to bend (e.g. following an "S"). Click points like any other
+            tool (right-click for a smooth curve point), then press Enter.
+          </p>
           <TwoPassUnderlayFields
             obj={obj}
             underlay={obj.fill.underlay}

@@ -104,6 +104,13 @@ export interface FillParams {
   // itself will cover them), 'straight' cuts directly through the interior
   // (shorter, but only hidden if the fill is dense enough to bury it).
   bridgeMode: 'perimeter' | 'straight';
+  // A hand-drawn curve (open path, design-space mm) that overrides `angle` as
+  // the row direction -- rows become offset copies of this curve, clipped to
+  // the shape, so stitch direction follows the guide's own bend instead of a
+  // single fixed angle (the standard "guided fill" technique for a shape
+  // whose grain should curve, e.g. an "S"). null means "use `angle`" (the
+  // original, pre-this-feature behavior).
+  guideLine: PathPoint[] | null;
 }
 
 export interface EmbObject {

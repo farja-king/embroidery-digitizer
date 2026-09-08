@@ -29,6 +29,7 @@ export function defaultObject(kind: StitchKind, points: PathPoint[], color: RGB)
       startPoint: null,
       endPoint: null,
       bridgeMode: 'perimeter',
+      guideLine: null,
     },
   };
 }
@@ -349,6 +350,13 @@ interface StoreValue {
   setTool: (t: ToolId) => void;
   activeColor: RGB;
   setActiveColor: (c: RGB) => void;
+  // Non-null while the canvas is in "draw an angle guide line" mode for this
+  // fill object's id -- set from Properties, consumed by Canvas (click-to-
+  // place points same as running/satin/fill drawing, but the finished line
+  // is saved onto this object's fill.guideLine instead of creating a new
+  // object). Canvas clears it back to null once the line is placed/canceled.
+  guideLineFor: string | null;
+  setGuideLineFor: (id: string | null) => void;
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
@@ -374,7 +382,8 @@ function loadInitial(): Document {
             (o.fill.pullCompensation === undefined ||
               o.fill.startPoint === undefined ||
               o.fill.endPoint === undefined ||
-              o.fill.bridgeMode === undefined)
+              o.fill.bridgeMode === undefined ||
+              o.fill.guideLine === undefined)
           ) {
             return {
               ...o,
@@ -384,6 +393,7 @@ function loadInitial(): Document {
                 startPoint: o.fill.startPoint ?? null,
                 endPoint: o.fill.endPoint ?? null,
                 bridgeMode: o.fill.bridgeMode ?? 'perimeter',
+                guideLine: o.fill.guideLine ?? null,
               },
             };
           }
@@ -411,6 +421,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
   const [tool, setTool] = useState<ToolId>('select');
   const [activeColor, setActiveColor] = useState<RGB>({ r: 237, g: 23, b: 31 });
+  const [guideLineFor, setGuideLineFor] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -437,6 +448,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setTool,
         activeColor,
         setActiveColor,
+        guideLineFor,
+        setGuideLineFor,
       }}
     >
       {children}

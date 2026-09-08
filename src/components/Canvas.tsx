@@ -64,7 +64,7 @@ function rgbCss(c: { r: number; g: number; b: number }): string {
 }
 
 export default function Canvas() {
-  const { doc, dispatch, undo, redo, selectedId, setSelectedId, selectedIds, setSelectedIds, tool, activeColor } = useStore();
+  const { doc, dispatch, undo, redo, selectedId, setSelectedId, selectedIds, setSelectedIds, tool, activeColor, guideLineFor, setGuideLineFor } = useStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ scale: 3.5, panX: 0, panY: 0 });
@@ -292,6 +292,17 @@ export default function Canvas() {
 
   const finishDrawing = useCallback(
     (cancel: boolean) => {
+      if (guideLineFor) {
+        if (drawingPoints && !cancel && drawingPoints.length >= 2) {
+          const target = doc.objects.find((o) => o.id === guideLineFor);
+          if (target && target.kind === 'fill') {
+            dispatch({ type: 'UPDATE_OBJECT', id: guideLineFor, patch: { fill: { ...target.fill, guideLine: drawingPoints } } });
+          }
+        }
+        setGuideLineFor(null);
+        setDrawingPoints(null);
+        return;
+      }
       if (drawingPoints && !cancel && drawingPoints.length >= 2 && (tool === 'running' || tool === 'satin' || tool === 'fill')) {
         const obj = defaultObject(tool, drawingPoints, activeColor);
         dispatch({ type: 'ADD_OBJECT', object: obj });
@@ -299,7 +310,7 @@ export default function Canvas() {
       }
       setDrawingPoints(null);
     },
-    [drawingPoints, tool, activeColor, dispatch, setSelectedId],
+    [drawingPoints, tool, activeColor, dispatch, setSelectedId, guideLineFor, setGuideLineFor, doc.objects],
   );
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -307,6 +318,18 @@ export default function Canvas() {
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
     const p = toDesign(px, py);
+
+    // Drawing an angle guide line takes over the canvas completely, regardless
+    // of whatever the normal tool is set to -- same click-to-place-vertex
+    // mechanic as running/satin/fill (left = corner, right = curve), just
+    // feeding the same drawingPoints state finishDrawing later attaches to
+    // the target object's fill.guideLine instead of creating a new object.
+    if (guideLineFor) {
+      (e.target as Element).setPointerCapture(e.pointerId);
+      const pt: PathPoint = { ...p, type: e.button === 2 ? 'curve' : 'corner' };
+      setDrawingPoints((prev) => (prev ? [...prev, pt] : [pt]));
+      return;
+    }
 
     // Right-click in select mode opens a context menu instead of panning/drawing;
     // right-click while placing points (running/satin/fill) still means "curve point",
@@ -773,6 +796,25 @@ export default function Canvas() {
       ctx.fillStyle = '#ffffff';
       ctx.fill();
       ctx.stroke();
+    }
+
+    // A saved angle guide line on the selected fill object -- drawn as a
+    // dashed teal path so it reads distinctly from the object's own outline
+    // (blue, when selected) and from the running stitch-preview stitches.
+    const selectedForGuide = doc.objects.find((o) => o.id === selectedId);
+    if (selectedForGuide?.kind === 'fill' && selectedForGuide.fill.guideLine && selectedForGuide.fill.guideLine.length >= 2) {
+      const flat = flattenPath(selectedForGuide.fill.guideLine, false);
+      ctx.beginPath();
+      flat.forEach((p, i) => {
+        const sp = toScreen(p);
+        if (i === 0) ctx.moveTo(sp.x, sp.y);
+        else ctx.lineTo(sp.x, sp.y);
+      });
+      ctx.strokeStyle = '#0aa89e';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     if (cutMarkerPattern) drawCutMarkers(ctx, cutMarkerPattern.stitches, toScreen);

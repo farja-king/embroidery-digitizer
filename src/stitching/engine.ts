@@ -1,5 +1,5 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { bridgeRowGaps, centroid, flattenPath, normalAt, offsetPolygon, pathLength, perimeterBridge, resamplePath, rotatePoint, straightBridge, tatamiRows } from './geometry';
+import { bridgeRowGaps, centroid, flattenPath, guidedFillRows, normalAt, offsetPolygon, pathLength, perimeterBridge, resamplePath, rotatePoint, straightBridge, tatamiRows } from './geometry';
 import { autoUnderlayType, fillUnderlay, normalizeUnderlay, satinUnderlay } from './underlay';
 
 /** When both a start and end point are set, splits the fill into two independently
@@ -141,6 +141,22 @@ function satinStitches(
   return out;
 }
 
+// Reverses `rows` in place when that lands its natural finish closer to
+// whichever of startPoint/endPoint is set (end prioritized when both are --
+// see fillStitches for why). A boustrophedon-style scan's whole point
+// sequence can always be walked from either end (each row's own internal
+// zigzag direction flips too, staying consistent), so this is a free choice
+// of which end is "first" -- shared by the plain angle scan and the guided
+// scan, which both produce exactly this kind of reversible row list.
+function reverseTowardTarget(rows: Point[], startPoint: Point | null, endPoint: Point | null): void {
+  if (rows.length <= 1 || (!startPoint && !endPoint)) return;
+  const target = (endPoint ?? startPoint)!;
+  const distFirst = Math.hypot(rows[0].x - target.x, rows[0].y - target.y);
+  const distLast = Math.hypot(rows[rows.length - 1].x - target.x, rows[rows.length - 1].y - target.y);
+  const shouldReverse = !!endPoint ? distFirst < distLast : distLast < distFirst;
+  if (shouldReverse) rows.reverse();
+}
+
 function fillStitches(
   polygon: Point[],
   angle: number,
@@ -151,6 +167,7 @@ function fillStitches(
   startPoint: Point | null,
   endPoint: Point | null,
   bridgeMode: 'perimeter' | 'straight',
+  guideLine: Point[] | null,
 ): StitchPoint[] {
   if (polygon.length < 3) return [];
   const bridge = bridgeMode === 'straight'
@@ -164,27 +181,23 @@ function fillStitches(
   const expanded = offsetPolygon(polygon, Math.max(0, pullCompensation));
   const step = Math.max(0.4, stitchLength);
   let rows: Point[];
-  if (startPoint && endPoint) {
+  if (guideLine && guideLine.length >= 2) {
+    // A hand-drawn guide overrides the fixed angle entirely -- rows become
+    // shifted copies of the guide's own curve, so direction bends with it
+    // instead of staying fixed. Still free to walk from either end, same as
+    // a plain angle scan, so start/end alignment works the same way.
+    rows = guidedFillRows(expanded, guideLine, rowSpacing, stitchLength);
+    reverseTowardTarget(rows, startPoint, endPoint);
+  } else if (startPoint && endPoint) {
     // Both ends pinned down: split the fill into two regions meeting at the end
     // point's row instead of one continuous scan bridged across an unrelated
     // gap -- see splitFillRows for the technique.
     rows = splitFillRows(expanded, angle, rowSpacing, stitchLength, startPoint, endPoint, step);
   } else {
     rows = tatamiRows(expanded, angle, rowSpacing, stitchLength);
-    // A boustrophedon scan's two natural ends are always at opposite Y-extremes of
-    // the shape (relative to the fill angle) -- reversing the whole point sequence
-    // is still a valid scan (each row's own internal direction flips too, so the
-    // zigzag stays consistent), just walked from the other end. Picking whichever
-    // direction lands its *natural finish* closer to the one point that's set is
-    // the fix for a long bridge back across the fill when only a start or only an
-    // end is pinned (both-pinned uses splitFillRows above instead).
-    if (rows.length > 1 && (startPoint || endPoint)) {
-      const target = (endPoint ?? startPoint)!;
-      const distFirst = Math.hypot(rows[0].x - target.x, rows[0].y - target.y);
-      const distLast = Math.hypot(rows[rows.length - 1].x - target.x, rows[rows.length - 1].y - target.y);
-      const shouldReverse = !!endPoint ? distFirst < distLast : distLast < distFirst;
-      if (shouldReverse) rows.reverse();
-    }
+    // Only a start or only an end pinned -- both-pinned uses splitFillRows
+    // above instead, which already handles alignment on both ends itself.
+    reverseTowardTarget(rows, startPoint, endPoint);
   }
   // A scan row on a concave shape (an L, a letter, a star's notch) can have more
   // than one disconnected span -- left alone, the row list jumps straight from
@@ -256,6 +269,7 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
       const underlayPts = resolveUnderlay(obj, obj.fill.underlay, (settings, type) =>
         fillUnderlay(flat, obj.fill.angle, settings, type, obj.fill.startPoint ?? null),
       );
+      const guideLine = obj.fill.guideLine && obj.fill.guideLine.length >= 2 ? flattenPath(obj.fill.guideLine, false) : null;
       return fillStitches(
         flat,
         obj.fill.angle,
@@ -266,6 +280,7 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
         obj.fill.startPoint ?? null,
         obj.fill.endPoint ?? null,
         obj.fill.bridgeMode ?? 'perimeter',
+        guideLine,
       );
     }
     default:

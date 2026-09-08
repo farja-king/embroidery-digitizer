@@ -403,3 +403,216 @@ export function tatamiRows(
   }
   return out;
 }
+
+/** Offsets every point of an already-fine *open* path along its own local
+ * normal -- the guided-fill equivalent of offsetPolygon, but for a path with
+ * two real ends rather than a closed loop. Used to generate the shifted
+ * copies of a guide line that become a guided fill's rows: offset by
+ * `k * rowSpacing` for k = ...,-2,-1,1,2,... and each copy still follows the
+ * guide's own curve, which is the whole point -- a fixed-angle scan can't
+ * bend with a shape, a set of shifted curves can. */
+export function offsetOpenPath(path: Point[], amount: number): Point[] {
+  return path.map((p, i) => {
+    const n = normalAt(path, i);
+    return { x: p.x + n.x * amount, y: p.y + n.y * amount };
+  });
+}
+
+/** Extends an open path's two ends outward by `amount`, straight along each
+ * end's own local tangent direction -- used to push a guide line's endpoints
+ * unambiguously past a polygon's boundary before clipping (see
+ * guidedFillRows for why that matters). */
+function extendPathEnds(path: Point[], amount: number): Point[] {
+  if (path.length < 2) return path;
+  const first = path[0];
+  const second = path[1];
+  const len0 = dist(first, second) || 1;
+  const extStart = { x: first.x + ((first.x - second.x) / len0) * amount, y: first.y + ((first.y - second.y) / len0) * amount };
+
+  const last = path[path.length - 1];
+  const secondLast = path[path.length - 2];
+  const len1 = dist(last, secondLast) || 1;
+  const extEnd = { x: last.x + ((last.x - secondLast.x) / len1) * amount, y: last.y + ((last.y - secondLast.y) / len1) * amount };
+
+  return [extStart, ...path, extEnd];
+}
+
+function polygonDiagonal(polygon: Point[]): number {
+  const xs = polygon.map((p) => p.x);
+  const ys = polygon.map((p) => p.y);
+  return Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+}
+
+/** Where segment a→b crosses segment p1→p2, as a fraction t along a→b (0..1),
+ * or null if they don't properly cross within both segments' extent. Standard
+ * 2D segment-intersection via cross products. `t` uses a half-open [0,1)
+ * bound (excludes the far end) rather than the naive [0,1]: when a polyline
+ * vertex sits exactly on a polygon edge -- routine for a guide line drawn to
+ * meet the shape's own boundary -- that vertex is the far end (t=1) of the
+ * segment arriving at it and the near end (t=0) of the segment leaving it,
+ * and both would otherwise register their own crossing there, double-
+ * counting a single boundary touch as two and throwing off every inside/
+ * outside toggle from that point on. Excluding t=1 means only the *leaving*
+ * segment's t=0 match counts, so a shared vertex is never counted twice. */
+function segmentIntersectionT(a: Point, b: Point, p1: Point, p2: Point): number | null {
+  const rx = b.x - a.x;
+  const ry = b.y - a.y;
+  const sx = p2.x - p1.x;
+  const sy = p2.y - p1.y;
+  const rxs = rx * sy - ry * sx;
+  if (Math.abs(rxs) < 1e-12) return null; // parallel (or degenerate) -- no single crossing point
+  const qpx = p1.x - a.x;
+  const qpy = p1.y - a.y;
+  const t = (qpx * sy - qpy * sx) / rxs;
+  const u = (qpx * ry - qpy * rx) / rxs;
+  if (t < 0 || t >= 1 || u < 0 || u > 1) return null;
+  return t;
+}
+
+/** Clips an open polyline to the portions that lie inside a closed polygon,
+ * returning each inside run as its own sub-polyline (a guide line offset far
+ * enough, or a concave shape, can produce more than one, or zero). Walks each
+ * segment, finds every crossing with the polygon's edges, and toggles
+ * inside/outside at each crossing in order -- the standard way to clip a
+ * line against an arbitrary (possibly non-convex) polygon without needing
+ * the polygon to be convex or the line to be straight. */
+export function clipPolylineToPolygon(polyline: Point[], polygon: Point[]): Point[][] {
+  if (polyline.length < 2 || polygon.length < 3) return [];
+  const out: Point[][] = [];
+  let current: Point[] = [];
+  const flush = () => {
+    if (current.length >= 2) out.push(current);
+    current = [];
+  };
+
+  let inside = pointInPolygon(polyline[0], polygon);
+  if (inside) current.push(polyline[0]);
+
+  const n = polygon.length;
+  for (let i = 1; i < polyline.length; i++) {
+    const a = polyline[i - 1];
+    const b = polyline[i];
+    const crossings: number[] = [];
+    for (let j = 0; j < n; j++) {
+      const t = segmentIntersectionT(a, b, polygon[j], polygon[(j + 1) % n]);
+      if (t !== null) crossings.push(t);
+    }
+    crossings.sort((x, y) => x - y);
+    for (const t of crossings) {
+      const pt = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+      if (inside) {
+        current.push(pt);
+        flush();
+      } else {
+        current = [pt];
+      }
+      inside = !inside;
+    }
+    if (inside) current.push(b);
+  }
+  flush();
+  return out;
+}
+
+/** True if segments a→b and c→d cross at a point interior to both (touching
+ * only at a shared endpoint doesn't count -- that's normal for consecutive
+ * segments of the same path). */
+function segmentsProperlyIntersect(a: Point, b: Point, c: Point, d: Point): boolean {
+  const rx = b.x - a.x;
+  const ry = b.y - a.y;
+  const sx = d.x - c.x;
+  const sy = d.y - c.y;
+  const rxs = rx * sy - ry * sx;
+  if (Math.abs(rxs) < 1e-12) return false;
+  const qpx = c.x - a.x;
+  const qpy = c.y - a.y;
+  const t = (qpx * sy - qpy * sx) / rxs;
+  const u = (qpx * ry - qpy * rx) / rxs;
+  const eps = 1e-9;
+  return t > eps && t < 1 - eps && u > eps && u < 1 - eps;
+}
+
+/** Whether any two non-adjacent segments of an open path cross each other --
+ * the signature of an offset curve that's folded back over itself past its
+ * own tightest bend. O(n²) but n is a curve-flattened guide line, at most a
+ * few hundred points, so this is cheap. */
+function pathSelfIntersects(path: Point[]): boolean {
+  const n = path.length;
+  for (let i = 0; i < n - 1; i++) {
+    for (let j = i + 2; j < n - 1; j++) {
+      if (segmentsProperlyIntersect(path[i], path[i + 1], path[j], path[j + 1])) return true;
+    }
+  }
+  return false;
+}
+
+/** Generates a guided fill's rows: shifted copies of `guideLine`, offset by
+ * whole multiples of `rowSpacing` in both directions, each clipped to
+ * `polygon` and resampled to `stitchLength` -- boustrophedon-ordered (each
+ * successive row's own direction alternates, and rows within one offset that
+ * got split into several disjoint pieces by a concave boundary are each kept
+ * in walk order) so the result is a single continuous scan, the same shape
+ * every other row-list in this file has. Stops offsetting in a direction
+ * once two offsets in a row miss the shape entirely -- past that point every
+ * further copy would too, for any shape this fill technique is meant for. */
+export function guidedFillRows(polygon: Point[], guideLine: Point[], rowSpacing: number, stitchLength: number): Point[] {
+  if (guideLine.length < 2 || polygon.length < 3) return [];
+  const spacing = Math.max(0.15, rowSpacing);
+  const stitchLen = Math.max(0.2, stitchLength);
+  // A guide drawn "across" the shape naturally starts/ends at or right on its
+  // boundary -- exactly the case pointInPolygon's ray-cast test is unreliable
+  // for (a point exactly on an edge can register as in or out depending on
+  // which way the test ray happens to graze it), which otherwise shows up as
+  // a spurious near-zero-length "clipped segment" right at each tip instead
+  // of the real, full-length row. Extending both ends well past the
+  // polygon's own extent first guarantees they're unambiguously outside, so
+  // every crossing clipPolylineToPolygon finds is a real one.
+  const margin = polygonDiagonal(polygon) + 1;
+  const extendedGuide = extendPathEnds(guideLine, margin);
+
+  const rowsAtOffset = (k: number): Point[][] => {
+    const offsetLine = k === 0 ? extendedGuide : offsetOpenPath(extendedGuide, k * spacing);
+    // A curve offset far enough past its own tightest bend folds over itself
+    // (the classic "self-intersecting offset curve" problem -- offsetting
+    // shrinks the inside of a bend faster than it grows the outside, and
+    // past the bend's own radius the inside side crosses itself). Treating
+    // that offset as a miss rather than using the corrupted, looping curve
+    // is what keeps a hand-drawn guide with a tight bend from producing a
+    // chaotic tangle of stitches instead of just stopping short of it.
+    if (k !== 0 && pathSelfIntersects(offsetLine)) return [];
+    return clipPolylineToPolygon(offsetLine, polygon);
+  };
+
+  const collect = (direction: 1 | -1): Point[][][] => {
+    const groups: Point[][][] = [];
+    let misses = 0;
+    for (let k = direction; misses < 2 && Math.abs(k) < 4000; k += direction) {
+      const segs = rowsAtOffset(k);
+      if (segs.length === 0) {
+        misses++;
+      } else {
+        misses = 0;
+        groups.push(segs);
+      }
+    }
+    return groups;
+  };
+
+  const negative = collect(-1).reverse(); // far side first, walking back toward the guide
+  const center = rowsAtOffset(0);
+  const positive = collect(1);
+  const allGroups = [...negative, center, ...positive];
+
+  const out: Point[] = [];
+  let rowIndex = 0;
+  for (const segs of allGroups) {
+    for (const seg of segs) {
+      if (seg.length < 2) continue;
+      const resampled = resamplePath(seg, stitchLen);
+      const ordered = rowIndex % 2 === 0 ? resampled : [...resampled].reverse();
+      out.push(...ordered);
+      rowIndex++;
+    }
+  }
+  return out;
+}
