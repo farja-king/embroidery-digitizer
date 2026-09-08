@@ -717,30 +717,6 @@ export default function Canvas() {
       drawObject(ctx, obj, toScreen, view.scale, selectedIds.includes(obj.id), showStitchPreview);
     }
 
-    // Draggable start (green) / end (red) markers for the primary selection —
-    // grab and drop on any vertex to reassign which point the thread starts/ends
-    // at, live. Slightly larger than an ordinary vertex handle and outlined in
-    // white so they read as distinct targets even sitting on top of a dense
-    // cluster of vertex/stitch dots.
-    if (tool === 'select' && !drawingPoints) {
-      const selectedObj = doc.objects.find((o) => o.id === selectedId);
-      if (selectedObj && selectedObj.visible && selectedObj.points.length >= 2) {
-        const startPt = toScreen(selectedObj.points[0]);
-        const endPt = toScreen(selectedObj.points[selectedObj.points.length - 1]);
-        const drawMarker = (pt: Point, fill: string, hovered: boolean) => {
-          ctx.beginPath();
-          ctx.arc(pt.x, pt.y, hovered ? 7 : 5.5, 0, Math.PI * 2);
-          ctx.fillStyle = fill;
-          ctx.fill();
-          ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
-        };
-        drawMarker(endPt, '#c0392b', hoveredEndpoint === 'end');
-        drawMarker(startPt, '#2e9e4f', hoveredEndpoint === 'start');
-      }
-    }
-
     // Resize/rotate handle frame around the current selection — not while actively
     // drawing a new shape, and not for a locked object (nothing to transform).
     if (
@@ -785,6 +761,31 @@ export default function Canvas() {
     }
 
     if (cutMarkerPattern) drawCutMarkers(ctx, cutMarkerPattern.stitches, toScreen);
+
+    // Draggable start (green) / end (red) markers for the primary selection —
+    // grab and drop on any vertex to reassign which point the thread starts/ends
+    // at, live. Slightly larger than an ordinary vertex handle and outlined in
+    // white so they read as distinct targets even sitting on top of a dense
+    // cluster of vertex/stitch dots. Drawn *after* the cut markers (scissors) so a
+    // start/end that happens to land right at a trim is never hidden underneath one.
+    if (tool === 'select' && !drawingPoints) {
+      const selectedObj = doc.objects.find((o) => o.id === selectedId);
+      if (selectedObj && selectedObj.visible && selectedObj.points.length >= 2) {
+        const startPt = toScreen(selectedObj.points[0]);
+        const endPt = toScreen(selectedObj.points[selectedObj.points.length - 1]);
+        const drawMarker = (pt: Point, fill: string, hovered: boolean) => {
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, hovered ? 7 : 5.5, 0, Math.PI * 2);
+          ctx.fillStyle = fill;
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        };
+        drawMarker(endPt, '#c0392b', hoveredEndpoint === 'end');
+        drawMarker(startPt, '#2e9e4f', hoveredEndpoint === 'start');
+      }
+    }
 
     // marquee-select rectangle, live while dragging
     if (dragRef.current?.kind === 'marquee' && mousePos) {
@@ -944,52 +945,28 @@ export default function Canvas() {
 }
 
 /** Marks every TRIM (thread cut) in the combined stitch sequence with a small scissor
- * glyph, and the overall design's first/last stitch with a start/end dot — so it's
- * visible on the canvas where a cut will happen and where the thread path begins,
- * before ever exporting or opening the stitch-out preview. */
+ * glyph, so it's visible on the canvas where a cut will happen before ever exporting
+ * or opening the stitch-out preview. The design's overall first/last stitch used to
+ * get its own green/red dot here too, but that's the same thing the per-object start/
+ * end markers already show (drawn separately, right below, whenever an object is
+ * selected) — having both up at once just put two overlapping dots of each color at
+ * the same spot, which is what this comment used to *not* warn about. */
 function drawCutMarkers(ctx: CanvasRenderingContext2D, stitches: StitchPoint[], toScreen: (p: Point) => Point) {
-  let first: Point | null = null;
-  let last: Point | null = null;
   for (const s of stitches) {
-    if (s.command === 'STITCH') {
-      if (!first) first = s;
-      last = s;
-    }
-    if (s.command === 'TRIM') {
-      const p = toScreen(s);
-      ctx.font = '13px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#c0392b';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.fillStyle = '#c0392b';
-      ctx.fillText('✂', p.x, p.y + 0.5);
-    }
-  }
-  if (first) {
-    const p = toScreen(first);
-    ctx.fillStyle = '#2e9e4f';
+    if (s.command !== 'TRIM') continue;
+    const p = toScreen(s);
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#fff';
+    ctx.strokeStyle = '#c0392b';
     ctx.lineWidth = 1.5;
     ctx.stroke();
-  }
-  if (last) {
-    const p = toScreen(last);
     ctx.fillStyle = '#c0392b';
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    ctx.fillText('✂', p.x, p.y + 0.5);
   }
 }
 
