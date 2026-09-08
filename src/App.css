@@ -214,6 +214,79 @@
   cursor: pointer;
 }
 
+.palette-modal {
+  max-width: 640px;
+  width: 90vw;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+}
+.palette-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.palette-tabs button {
+  margin-top: 0;
+  background: #fff;
+  color: var(--text, #333);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  padding: 6px 10px;
+}
+.palette-tabs button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.palette-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.palette-count {
+  margin: 4px 0 8px;
+  font-size: 12px;
+}
+.palette-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(26px, 1fr));
+  gap: 4px;
+  overflow-y: auto;
+  flex: 1;
+  padding-right: 4px;
+}
+.palette-swatch {
+  margin-top: 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.palette-swatch:hover {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.palette-close {
+  align-self: flex-end;
+}
+.palette-open-btn {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 6px;
+  width: 30px;
+  height: 30px;
+  font-size: 15px;
+  cursor: pointer;
+  margin-top: 4px;
+}
+
 .preview-btn {
   font-weight: 600;
 }

@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { useStore } from '../state/store';
 import type { ToolId } from '../types';
+import ThreadPaletteModal from './ThreadPaletteModal';
 
 const TOOLS: { id: ToolId; label: string; hint: string }[] = [
   { id: 'select', label: '↖', hint: 'Select' },
@@ -23,6 +25,7 @@ const SWATCHES = [
 
 export default function Toolbar() {
   const { tool, setTool, activeColor, setActiveColor, selectedIds, dispatch } = useStore();
+  const [showPalette, setShowPalette] = useState(false);
 
   // With one or more objects selected, a swatch click recolors them directly —
   // faster than opening Properties per-object when batch-coloring a multi-color
@@ -62,7 +65,16 @@ export default function Toolbar() {
           onChange={(e) => applyColor(hexToRgb(e.target.value))}
           title="Custom thread color"
         />
+        <button className="palette-open-btn" onClick={() => setShowPalette(true)} title="Madeira Classic 40 / Polyneon thread palette">
+          🧵
+        </button>
       </div>
+      {showPalette && (
+        <ThreadPaletteModal
+          onPick={(c) => applyColor(c)}
+          onClose={() => setShowPalette(false)}
+        />
+      )}
     </div>
   );
 }
