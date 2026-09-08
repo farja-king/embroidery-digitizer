@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, defaultObject, makeId } from '../state/store';
 import type { EmbObject, PathPoint, Point } from '../types';
 import { buildPattern, generateObjectStitches, type StitchPoint } from '../stitching/engine';
-import { distanceToPolyline, flattenPath, pointInPolygon } from '../stitching/geometry';
+import { distanceToPolyline, distanceToSegment, flattenPath, pointInPolygon } from '../stitching/geometry';
 import { pointsForKindChange } from '../stitching/kindConvert';
 import BackgroundControls from './BackgroundControls';
 import ContextMenu, { type ContextMenuState } from './ContextMenu';
@@ -152,6 +152,35 @@ export default function Canvas() {
     [view.scale],
   );
 
+  // Where a new point would land if the user chose "Add point here" for a right-click
+  // that hit the object's outline but not an existing vertex — the raw (sparse)
+  // points array, not the flattened curve, since that's what's actually edited.
+  // A curved segment's flattened shape can bulge away from its two control points,
+  // but hit-testing against the straight control-polygon segment is the same
+  // "click near the outline to insert a node" convention most vector node-editors use.
+  const getSegmentInsertIndex = useCallback(
+    (p: Point, obj: EmbObject): number | null => {
+      const pts = obj.points;
+      if (pts.length < 2) return null;
+      const closed = obj.kind === 'fill';
+      const segCount = closed ? pts.length : pts.length - 1;
+      let best = -1;
+      let bestDist = Infinity;
+      for (let i = 0; i < segCount; i++) {
+        const a = pts[i];
+        const b = pts[(i + 1) % pts.length];
+        const d = distanceToSegment(p, a, b);
+        if (d < bestDist) {
+          bestDist = d;
+          best = i;
+        }
+      }
+      const thresholdMm = Math.max(OBJECT_HIT_PX / view.scale, obj.kind === 'satin' ? obj.satin.width / 2 : 0);
+      return bestDist < thresholdMm ? best + 1 : null;
+    },
+    [view.scale],
+  );
+
   const finishDrawing = useCallback(
     (cancel: boolean) => {
       if (drawingPoints && !cancel && drawingPoints.length >= 2 && (tool === 'running' || tool === 'satin' || tool === 'fill')) {
@@ -179,7 +208,15 @@ export default function Canvas() {
       const hit = vi >= 0 ? selected! : getObjectAt(p);
       if (hit) {
         if (!selectedIds.includes(hit.id)) setSelectedId(hit.id);
-        setContextMenu({ screenX: e.clientX, screenY: e.clientY, obj: hit, vertexIndex: vi >= 0 ? vi : null });
+        const insertIndex = vi < 0 ? getSegmentInsertIndex(p, hit) : null;
+        setContextMenu({
+          screenX: e.clientX,
+          screenY: e.clientY,
+          obj: hit,
+          vertexIndex: vi >= 0 ? vi : null,
+          insertIndex,
+          insertPoint: insertIndex !== null ? p : null,
+        });
       } else {
         setContextMenu(null);
       }
@@ -541,6 +578,15 @@ export default function Canvas() {
           onReverseDirection={() => {
             const reversed = [...contextMenu.obj.points].reverse();
             dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { points: reversed } });
+          }}
+          onAddPoint={(insertIndex, point) => {
+            const pts = contextMenu.obj.points.slice();
+            pts.splice(insertIndex, 0, { ...point, type: 'corner' });
+            dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { points: pts } });
+          }}
+          onDeletePoint={(vertexIndex) => {
+            const pts = contextMenu.obj.points.filter((_, i) => i !== vertexIndex);
+            dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { points: pts } });
           }}
         />
       )}
