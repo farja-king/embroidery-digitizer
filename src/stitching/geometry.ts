@@ -313,8 +313,15 @@ export function scanlineSpans(polygon: Point[], rowY: number): number[] {
  * (in the same rotated local-Y space the scan itself works in, from `localY`)
  * restricts which rows get generated to a band of the shape -- used to split a
  * fill into two independently-scanned regions that meet at a chosen row instead
- * of always covering the whole shape in one continuous pass. */
-export function tatamiRows(polygon: Point[], angle: number, rowSpacing: number, stitchLength: number, yRange?: [number, number]): Point[] {
+ * of always covering the whole shape in one continuous pass. `anchorY`, when
+ * splitting, should be the same shared row (typically the split line) passed to
+ * *both* regions' calls -- it phase-locks the row grid to that line instead of
+ * to each region's own edge, so the region on each side has a row exactly
+ * `rowSpacing/2` from the boundary rather than up to a full `rowSpacing` short
+ * of it (which independently-anchored grids would leave as a visible double-wide
+ * gap right where the two regions meet). Defaults to the shape's own min-Y,
+ * i.e. unchanged behavior for every non-split caller. */
+export function tatamiRows(polygon: Point[], angle: number, rowSpacing: number, stitchLength: number, yRange?: [number, number], anchorY?: number): Point[] {
   if (polygon.length < 3) return [];
   const c = centroid(polygon);
   const rotated = polygon.map((p) => rotatePoint(p, c, -angle));
@@ -325,10 +332,13 @@ export function tatamiRows(polygon: Point[], angle: number, rowSpacing: number, 
   const maxY = yRange ? Math.min(shapeMaxY, yRange[1]) : shapeMaxY;
   const spacing = Math.max(0.15, rowSpacing);
   const stitchLen = Math.max(0.2, stitchLength);
+  const anchor = anchorY ?? shapeMinY;
+  // First row >= minY on the grid phase-aligned to anchor + spacing/2 (mod spacing).
+  const firstY = anchor + spacing / 2 + Math.ceil((minY - (anchor + spacing / 2)) / spacing) * spacing;
 
   const out: Point[] = [];
   let rowIndex = 0;
-  for (let y = minY + spacing / 2; y < maxY; y += spacing) {
+  for (let y = firstY; y < maxY; y += spacing) {
     const xs = scanlineSpans(rotated, y);
     for (let i = 0; i + 1 < xs.length; i += 2) {
       const x0 = xs[i];

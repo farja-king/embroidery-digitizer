@@ -38,17 +38,22 @@ function splitFillRows(
 
   let nearRows: Point[];
   let farRows: Point[];
+  // Both calls share splitY as their row-grid anchor so the row nearest the
+  // boundary on each side lands exactly rowSpacing/2 from it -- without this,
+  // each region anchors independently to its own edge and can leave up to a
+  // full rowSpacing gap (double the normal row pitch) uncovered right at the
+  // seam, which shows up as a visible gap line where the two regions meet.
   if (nearIsMin) {
     // Ascending row order (tatamiRows' natural direction) already runs from the
     // shape's min extreme up to the split row -- exactly start-side-first.
-    nearRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [shapeMinY, splitY]);
+    nearRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [shapeMinY, splitY], splitY);
     // The far region's natural ascending order runs split-row-to-max, which
     // starts at the split (wrong end) -- reverse so it starts at the far max
     // extreme and finishes back at the split row, next to the end point.
-    farRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [splitY, shapeMaxY]).reverse();
+    farRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [splitY, shapeMaxY], splitY).reverse();
   } else {
-    nearRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [splitY, shapeMaxY]).reverse();
-    farRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [shapeMinY, splitY]);
+    nearRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [splitY, shapeMaxY], splitY).reverse();
+    farRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [shapeMinY, splitY], splitY);
   }
 
   if (nearRows.length === 0) return farRows;
