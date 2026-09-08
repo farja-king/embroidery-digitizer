@@ -291,6 +291,47 @@
   font-weight: 600;
 }
 
+/* Text tool */
+.text-modal {
+  width: 360px;
+  max-width: 92vw;
+}
+.secondary-btn {
+  margin-top: 0;
+  background: #fff;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.text-modal-font-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.upload-font-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.small {
+  font-size: 11px;
+}
+.text-modal-error {
+  color: #b8342a;
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+.text-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.text-modal-actions button {
+  margin-top: 0;
+}
+
 /* Stitch-out playback */
 .playback-modal {
   background: #fff;

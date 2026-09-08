@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../state/store';
 import type { ToolId } from '../types';
 import ThreadPaletteModal from './ThreadPaletteModal';
+import TextModal from './TextModal';
 
 const TOOLS: { id: ToolId; label: string; hint: string }[] = [
   { id: 'select', label: '↖', hint: 'Select' },
@@ -26,6 +27,7 @@ const SWATCHES = [
 export default function Toolbar() {
   const { tool, setTool, activeColor, setActiveColor, selectedIds, dispatch } = useStore();
   const [showPalette, setShowPalette] = useState(false);
+  const [showText, setShowText] = useState(false);
 
   // With one or more objects selected, a swatch click recolors them directly —
   // faster than opening Properties per-object when batch-coloring a multi-color
@@ -47,6 +49,9 @@ export default function Toolbar() {
           {t.label}
         </button>
       ))}
+      <button className="tool-btn" title="Add text" onClick={() => setShowText(true)}>
+        🔤
+      </button>
       <div className="toolbar-sep" />
       <div className="swatches">
         {SWATCHES.map((c, i) => (
@@ -75,6 +80,7 @@ export default function Toolbar() {
           onClose={() => setShowPalette(false)}
         />
       )}
+      {showText && <TextModal color={activeColor} onClose={() => setShowText(false)} />}
     </div>
   );
 }

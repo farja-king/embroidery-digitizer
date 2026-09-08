@@ -43,6 +43,7 @@ const initialDocument: Document = {
 
 type Action =
   | { type: 'ADD_OBJECT'; object: EmbObject }
+  | { type: 'ADD_OBJECTS'; objects: EmbObject[] }
   | { type: 'UPDATE_OBJECT'; id: string; patch: Partial<EmbObject> }
   | { type: 'REMOVE_OBJECT'; id: string }
   | { type: 'DUPLICATE_OBJECT'; id: string; newId: string }
@@ -163,6 +164,8 @@ function reducer(state: Document, action: Action): Document {
   switch (action.type) {
     case 'ADD_OBJECT':
       return { ...state, objects: [...state.objects, action.object] };
+    case 'ADD_OBJECTS':
+      return { ...state, objects: [...state.objects, ...action.objects] };
     case 'UPDATE_OBJECT':
       return {
         ...state,
