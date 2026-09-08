@@ -531,18 +531,28 @@ export default function Canvas() {
     return () => window.removeEventListener('keydown', onKey);
   }, [finishDrawing, selectedId, dispatch, setSelectedId, selectedIds, setSelectedIds, doc.background?.visible, drawingPoints, undo, redo]);
 
-  const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const rect = canvasRef.current!.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const py = e.clientY - rect.top;
-    const before = toDesign(px, py);
-    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    const newScale = Math.min(40, Math.max(0.6, view.scale * factor));
-    const newPanX = px - before.x * newScale;
-    const newPanY = py - before.y * newScale;
-    setView({ scale: newScale, panX: newPanX, panY: newPanY });
-  };
+  // Attached as a native, non-passive listener (not the JSX onWheel prop) —
+  // React registers wheel/touch handlers passively by default for scroll
+  // perf, and calling preventDefault() inside a passive listener is a no-op
+  // that also logs a console warning every time.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const before = toDesign(px, py);
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const newScale = Math.min(40, Math.max(0.6, view.scale * factor));
+      const newPanX = px - before.x * newScale;
+      const newPanY = py - before.y * newScale;
+      setView({ scale: newScale, panX: newPanX, panY: newPanY });
+    };
+    canvas.addEventListener('wheel', handler, { passive: false });
+    return () => canvas.removeEventListener('wheel', handler);
+  }, [view, toDesign]);
 
   // --- Rendering ---
   useEffect(() => {
@@ -705,7 +715,6 @@ export default function Canvas() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onDoubleClick={onDoubleClick}
-        onWheel={onWheel}
         onContextMenu={(e) => e.preventDefault()}
       />
       <div className="canvas-hint">
