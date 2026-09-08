@@ -380,7 +380,16 @@ export function buildPattern(objects: EmbObject[], trimThresholdMm = 3): BuiltPa
     started = true;
   }
 
-  if (started) stitches.push({ x: cursor.x, y: cursor.y, command: 'END' });
+  // There's always a trim at the very end of the design too -- not just between
+  // objects. The inter-object check above only *skips* a trim when the next
+  // element is close enough (within trimThresholdMm) that a plain jump serves
+  // fine instead; nothing "follows" the last object to earn that exemption, so
+  // its thread always gets cut, matching what a real machine does at the end
+  // of a run and what the user explicitly confirmed this app should do.
+  if (started) {
+    stitches.push({ x: cursor.x, y: cursor.y, command: 'TRIM' });
+    stitches.push({ x: cursor.x, y: cursor.y, command: 'END' });
+  }
   return { stitches: clampLongStitches(addTieStitches(stitches)), threads };
 }
 
