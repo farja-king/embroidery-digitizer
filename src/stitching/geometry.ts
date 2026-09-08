@@ -208,13 +208,22 @@ export function tatamiRows(polygon: Point[], angle: number, rowSpacing: number, 
       const leftToRight = rowIndex % 2 === 0;
       const from = leftToRight ? x0 : x1;
       const to = leftToRight ? x1 : x0;
-      const span = Math.abs(to - from);
-      const steps = Math.max(1, Math.round(span / stitchLen));
-      for (let s = 0; s <= steps; s++) {
-        const t = s / steps;
-        const rx = from + (to - from) * t;
-        out.push(rotatePoint({ x: rx, y }, c, angle));
+      // Needle penetration points that line up row-to-row read as a visible
+      // perforated seam. Alternating rows by half a stitch length staggers them
+      // into a brick-laying pattern instead, same as Hatch's tatami fill default.
+      const phase = rowIndex % 2 === 0 ? 0 : stitchLen / 2;
+      const dir = to >= from ? 1 : -1;
+      const startX = from + dir * phase;
+      const positions: number[] = [from];
+      for (let x = startX; dir > 0 ? x < to : x > to; x += dir * stitchLen) {
+        if (Math.abs(x - from) > 1e-9) positions.push(x);
       }
+      if (positions.length < 2 || Math.abs(positions[positions.length - 1] - to) > stitchLen * 0.25) {
+        positions.push(to);
+      } else {
+        positions[positions.length - 1] = to;
+      }
+      for (const rx of positions) out.push(rotatePoint({ x: rx, y }, c, angle));
       rowIndex++;
     }
   }

@@ -34,11 +34,20 @@ function runningStitches(points: Point[], stitchLength: number, triple: boolean)
   return out;
 }
 
-function satinStitches(points: Point[], width: number, density: number, underlayPts: Point[]): StitchPoint[] {
+function satinStitches(
+  points: Point[],
+  width: number,
+  density: number,
+  underlayPts: Point[],
+  pullCompensation: number,
+): StitchPoint[] {
   const sampled = resamplePath(points, Math.max(0.2, density));
   const out: StitchPoint[] = [];
   for (const p of underlayPts) out.push({ x: p.x, y: p.y, command: 'STITCH' });
-  const half = width / 2;
+  // Thread tension pulls stitched fabric in toward the column's centerline, so a
+  // column sewn at its exact digitized width comes out narrower on fabric than on
+  // screen. Push each rail outward by the compensation amount to counteract it.
+  const half = width / 2 + Math.max(0, pullCompensation);
   for (let i = 0; i < sampled.length; i++) {
     const n = normalAt(sampled, i);
     const side = i % 2 === 0 ? 1 : -1;
@@ -77,7 +86,7 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
       const underlayPts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) =>
         satinUnderlay(flat, obj.satin.width, settings, type),
       );
-      return satinStitches(flat, obj.satin.width, obj.satin.density, underlayPts);
+      return satinStitches(flat, obj.satin.width, obj.satin.density, underlayPts, obj.satin.pullCompensation ?? 0);
     }
     case 'fill': {
       const underlayPts = resolveUnderlay(obj, obj.fill.underlay, (settings, type) =>
@@ -176,7 +185,61 @@ export function buildPattern(objects: EmbObject[], trimThresholdMm = 3): BuiltPa
   }
 
   if (started) stitches.push({ x: cursor.x, y: cursor.y, command: 'END' });
-  return { stitches: clampLongStitches(stitches), threads };
+  return { stitches: clampLongStitches(addTieStitches(stitches)), threads };
+}
+
+const TIE_LENGTH_MM = 0.3;
+
+/** A tiny forward-then-back movement at `anchor`, aimed toward `toward`. Two extra
+ * needle penetrations almost on top of each other lock the thread end without any
+ * visible movement — the standard tie-in/tie-off technique every digitizer uses so
+ * a trim doesn't let a thread end work loose. */
+function tieStitchesAt(anchor: Point, toward: Point): StitchPoint[] {
+  const dx = toward.x - anchor.x;
+  const dy = toward.y - anchor.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len;
+  const uy = dy / len;
+  return [
+    { x: anchor.x + ux * TIE_LENGTH_MM, y: anchor.y + uy * TIE_LENGTH_MM, command: 'STITCH' },
+    { x: anchor.x, y: anchor.y, command: 'STITCH' },
+  ];
+}
+
+/** Inserts tie-in stitches right after every point a new thread run starts from
+ * (the very first stitch, or the first stitch after a COLOR_CHANGE/TRIM) and
+ * tie-off stitches right before every point a thread run ends at (the last stitch,
+ * or the last stitch before a COLOR_CHANGE/TRIM/END) — mirrors Hatch's default
+ * lock-stitch behavior at every thread start/end. */
+function addTieStitches(stitches: StitchPoint[]): StitchPoint[] {
+  const out: StitchPoint[] = [];
+  for (let i = 0; i < stitches.length; i++) {
+    const s = stitches[i];
+    if (s.command !== 'STITCH') {
+      out.push(s);
+      continue;
+    }
+    const prevCmd = i > 0 ? stitches[i - 1].command : null;
+    const isRunStart = prevCmd === null || prevCmd === 'COLOR_CHANGE' || prevCmd === 'TRIM';
+    if (isRunStart) {
+      const next = stitches.slice(i + 1).find((x) => x.command === 'STITCH') ?? s;
+      out.push(...tieStitchesAt(s, next));
+    }
+    out.push(s);
+    const nextCmd = i < stitches.length - 1 ? stitches[i + 1].command : 'END';
+    const isRunEnd = nextCmd === 'COLOR_CHANGE' || nextCmd === 'TRIM' || nextCmd === 'END';
+    if (isRunEnd) {
+      let prevStitch: StitchPoint = s;
+      for (let j = out.length - 2; j >= 0; j--) {
+        if (out[j].command === 'STITCH') {
+          prevStitch = out[j];
+          break;
+        }
+      }
+      out.push(...tieStitchesAt(s, prevStitch));
+    }
+  }
+  return out;
 }
 
 /** Every format here caps a single stitch/jump delta at ~12.1mm. Satin columns with a

@@ -202,6 +202,14 @@ export default function PropertiesPanel() {
             step={0.1}
             onChange={(v) => update({ satin: { ...obj.satin, density: v } })}
           />
+          <NumberField
+            label="Pull compensation (mm)"
+            value={obj.satin.pullCompensation}
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={(v) => update({ satin: { ...obj.satin, pullCompensation: v } })}
+          />
           <TwoPassUnderlayFields
             obj={obj}
             underlay={obj.satin.underlay}

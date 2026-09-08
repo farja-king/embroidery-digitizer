@@ -66,6 +66,12 @@ export interface SatinParams {
   width: number; // mm, rail-to-rail
   density: number; // mm between zigzag stitches along the path
   underlay: TwoPassUnderlay;
+  // mm added to each rail's half-width. Stitched fabric "pulls in" toward the
+  // column's centerline as thread tension draws the rows together, so a column
+  // sewn at its exact digitized width comes out visibly narrower on fabric.
+  // Pull compensation pushes each rail outward by this much to counteract it —
+  // a standard Hatch/industry technique, not a cosmetic setting.
+  pullCompensation: number;
 }
 
 export interface FillParams {

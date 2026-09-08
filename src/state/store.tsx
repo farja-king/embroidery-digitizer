@@ -16,7 +16,7 @@ export function defaultObject(kind: StitchKind, points: PathPoint[], color: RGB)
     visible: true,
     locked: false,
     running: { stitchLength: 2.5, triple: false },
-    satin: { width: 3, density: 0.4, underlay: defaultTwoPassUnderlay('zigzag') },
+    satin: { width: 3, density: 0.4, underlay: defaultTwoPassUnderlay('zigzag'), pullCompensation: 0.2 },
     fill: { angle: 0, rowSpacing: 0.4, stitchLength: 3, underlay: defaultTwoPassUnderlay('tatami') },
   };
 }
@@ -206,7 +206,17 @@ function loadInitial(): Document {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Document;
-      return { ...parsed, background: parsed.background ?? null, trimThresholdMm: parsed.trimThresholdMm ?? 3 };
+      return {
+        ...parsed,
+        background: parsed.background ?? null,
+        trimThresholdMm: parsed.trimThresholdMm ?? 3,
+        // Docs saved before pullCompensation existed have satin objects missing it.
+        objects: parsed.objects.map((o) =>
+          o.kind === 'satin' && o.satin.pullCompensation === undefined
+            ? { ...o, satin: { ...o.satin, pullCompensation: 0.2 } }
+            : o,
+        ),
+      };
     }
   } catch {
     // ignore corrupt/unavailable storage
