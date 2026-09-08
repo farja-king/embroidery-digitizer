@@ -1,4 +1,4 @@
-import { useStore } from '../state/store';
+import { useStore, type AlignMode } from '../state/store';
 import type { EmbObject, StitchKind, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
 import { autoUnderlayType, normalizeUnderlay } from '../stitching/underlay';
 import { pointsForKindChange } from '../stitching/kindConvert';
@@ -120,8 +120,34 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
   return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
 }
 
+const ALIGN_BUTTONS: { mode: AlignMode; label: string; title: string }[] = [
+  { mode: 'left', label: '◧', title: 'Align left' },
+  { mode: 'centerH', label: '↔', title: 'Center horizontally' },
+  { mode: 'right', label: '◨', title: 'Align right' },
+  { mode: 'top', label: '⬒', title: 'Align top' },
+  { mode: 'centerV', label: '↕', title: 'Center vertically' },
+  { mode: 'bottom', label: '⬓', title: 'Align bottom' },
+];
+
 export default function PropertiesPanel() {
-  const { doc, dispatch, selectedId } = useStore();
+  const { doc, dispatch, selectedId, selectedIds } = useStore();
+
+  if (selectedIds.length > 1) {
+    return (
+      <div className="panel">
+        <h3>Align selection</h3>
+        <p className="muted">{selectedIds.length} objects selected.</p>
+        <div className="align-buttons">
+          {ALIGN_BUTTONS.map((b) => (
+            <button key={b.title} title={b.title} onClick={() => dispatch({ type: 'ALIGN_OBJECTS', ids: selectedIds, mode: b.mode })}>
+              {b.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   const obj = doc.objects.find((o) => o.id === selectedId);
 
   if (!obj) {

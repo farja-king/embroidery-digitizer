@@ -660,6 +660,24 @@
   color: var(--muted);
   margin-bottom: 6px;
 }
+.align-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 8px;
+}
+.align-buttons button {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 6px;
+  padding: 10px 8px;
+  font-size: 16px;
+  cursor: pointer;
+}
+.align-buttons button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .underlay-mode-toggle {
   display: flex;
   gap: 4px;

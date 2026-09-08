@@ -1,6 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { BackgroundImage, Document, EmbObject, HoopSize, PathPoint, RGB, StitchKind, ToolId } from '../types';
 import { HOOP_PRESETS, defaultTwoPassUnderlay } from '../types';
+import { flattenPath } from '../stitching/geometry';
+
+export type AlignMode = 'left' | 'right' | 'centerH' | 'top' | 'bottom' | 'centerV';
 
 export function makeId(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -35,6 +38,7 @@ type Action =
   | { type: 'REMOVE_OBJECT'; id: string }
   | { type: 'DUPLICATE_OBJECT'; id: string; newId: string }
   | { type: 'REORDER'; fromIndex: number; toIndex: number }
+  | { type: 'ALIGN_OBJECTS'; ids: string[]; mode: AlignMode }
   | { type: 'SET_HOOP'; hoop: HoopSize }
   | { type: 'SET_NAME'; name: string }
   | { type: 'SET_TRIM_THRESHOLD'; mm: number }
@@ -42,6 +46,18 @@ type Action =
   | { type: 'UPDATE_BACKGROUND'; patch: Partial<BackgroundImage> }
   | { type: 'LOAD_DOCUMENT'; document: Document }
   | { type: 'CLEAR' };
+
+function bboxOf(o: EmbObject): { minX: number; minY: number; maxX: number; maxY: number } {
+  const flat = flattenPath(o.points, o.kind === 'fill');
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of flat) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  return { minX, minY, maxX, maxY };
+}
 
 function reducer(state: Document, action: Action): Document {
   switch (action.type) {
@@ -74,6 +90,39 @@ function reducer(state: Document, action: Action): Document {
       const [moved] = objs.splice(action.fromIndex, 1);
       objs.splice(action.toIndex, 0, moved);
       return { ...state, objects: objs };
+    }
+    case 'ALIGN_OBJECTS': {
+      if (action.ids.length < 2) return state;
+      const targets = state.objects.filter((o) => action.ids.includes(o.id));
+      const boxes = new Map(targets.map((o) => [o.id, bboxOf(o)]));
+      // Align to the union bounding box of the whole selection (not a "key object") —
+      // the conventional default when no single object is designated as the anchor.
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const b of boxes.values()) {
+        minX = Math.min(minX, b.minX);
+        minY = Math.min(minY, b.minY);
+        maxX = Math.max(maxX, b.maxX);
+        maxY = Math.max(maxY, b.maxY);
+      }
+      return {
+        ...state,
+        objects: state.objects.map((o) => {
+          const b = boxes.get(o.id);
+          if (!b) return o;
+          let dx = 0;
+          let dy = 0;
+          switch (action.mode) {
+            case 'left': dx = minX - b.minX; break;
+            case 'right': dx = maxX - b.maxX; break;
+            case 'centerH': dx = (minX + maxX) / 2 - (b.minX + b.maxX) / 2; break;
+            case 'top': dy = minY - b.minY; break;
+            case 'bottom': dy = maxY - b.maxY; break;
+            case 'centerV': dy = (minY + maxY) / 2 - (b.minY + b.maxY) / 2; break;
+          }
+          if (dx === 0 && dy === 0) return o;
+          return { ...o, points: o.points.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy })) };
+        }),
+      };
     }
     case 'SET_HOOP':
       return { ...state, hoop: action.hoop };

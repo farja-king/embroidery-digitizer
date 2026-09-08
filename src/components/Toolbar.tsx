@@ -22,7 +22,15 @@ const SWATCHES = [
 ];
 
 export default function Toolbar() {
-  const { tool, setTool, activeColor, setActiveColor } = useStore();
+  const { tool, setTool, activeColor, setActiveColor, selectedIds, dispatch } = useStore();
+
+  // With one or more objects selected, a swatch click recolors them directly —
+  // faster than opening Properties per-object when batch-coloring a multi-color
+  // design. With nothing selected it just sets the color new shapes will draw with.
+  const applyColor = (c: { r: number; g: number; b: number }) => {
+    setActiveColor(c);
+    for (const id of selectedIds) dispatch({ type: 'UPDATE_OBJECT', id, patch: { color: c } });
+  };
 
   return (
     <div className="toolbar">
@@ -43,15 +51,15 @@ export default function Toolbar() {
             key={i}
             className={`swatch ${activeColor.r === c.r && activeColor.g === c.g && activeColor.b === c.b ? 'active' : ''}`}
             style={{ background: `rgb(${c.r},${c.g},${c.b})` }}
-            onClick={() => setActiveColor(c)}
-            title="Thread color"
+            onClick={() => applyColor(c)}
+            title={selectedIds.length > 0 ? 'Recolor selection' : 'Thread color'}
           />
         ))}
         <input
           type="color"
           className="color-input"
           value={rgbToHex(activeColor)}
-          onChange={(e) => setActiveColor(hexToRgb(e.target.value))}
+          onChange={(e) => applyColor(hexToRgb(e.target.value))}
           title="Custom thread color"
         />
       </div>

@@ -368,7 +368,7 @@ export default function Canvas() {
     const py = e.clientY - rect.top;
     const before = toDesign(px, py);
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    const newScale = Math.min(20, Math.max(0.6, view.scale * factor));
+    const newScale = Math.min(40, Math.max(0.6, view.scale * factor));
     const newPanX = px - before.x * newScale;
     const newPanY = py - before.y * newScale;
     setView({ scale: newScale, panX: newPanX, panY: newPanY });
@@ -508,7 +508,7 @@ export default function Canvas() {
         <div className="zoom-controls">
           <button onClick={() => setView((v) => ({ ...v, scale: Math.max(0.6, v.scale / 1.2) }))}>−</button>
           <span>{Math.round(view.scale * 10)}%</span>
-          <button onClick={() => setView((v) => ({ ...v, scale: Math.min(20, v.scale * 1.2) }))}>+</button>
+          <button onClick={() => setView((v) => ({ ...v, scale: Math.min(40, v.scale * 1.2) }))}>+</button>
         </div>
       </div>
       {contextMenu && (
