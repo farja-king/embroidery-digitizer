@@ -39,6 +39,7 @@ type Action =
   | { type: 'DUPLICATE_OBJECT'; id: string; newId: string }
   | { type: 'REORDER'; fromIndex: number; toIndex: number }
   | { type: 'ALIGN_OBJECTS'; ids: string[]; mode: AlignMode }
+  | { type: 'OPTIMIZE_STITCH_ORDER' }
   | { type: 'SET_HOOP'; hoop: HoopSize }
   | { type: 'SET_NAME'; name: string }
   | { type: 'SET_TRIM_THRESHOLD'; mm: number }
@@ -46,6 +47,96 @@ type Action =
   | { type: 'UPDATE_BACKGROUND'; patch: Partial<BackgroundImage> }
   | { type: 'LOAD_DOCUMENT'; document: Document }
   | { type: 'CLEAR' };
+
+function dist(a: { x: number; y: number }, b: { x: number; y: number }): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function colorKey(o: EmbObject): string {
+  return `${o.color.r},${o.color.g},${o.color.b}`;
+}
+
+/** Hatch's "Apply Closest Join": re-sequences objects so consecutive stitching
+ * travels as little as possible and each thread color is stitched in one
+ * contiguous block (never re-threaded twice) — matching the trim/continuous-jump
+ * logic buildPattern already applies based on that final order. Which color goes
+ * first/second/etc is left alone (first appearance order); only the objects
+ * *within* each color get reordered, and reversed/rotated when that gets their
+ * starting point closer to wherever the thread just finished. */
+function optimizeStitchOrder(objects: EmbObject[]): EmbObject[] {
+  const colorOrder: string[] = [];
+  const groups = new Map<string, EmbObject[]>();
+  for (const o of objects) {
+    const key = colorKey(o);
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      colorOrder.push(key);
+    }
+    groups.get(key)!.push(o);
+  }
+
+  // Start from the overall design's center, a reasonable stand-in for where the
+  // machine actually begins (buildPattern centers the exported file the same way).
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const o of objects) {
+    for (const p of o.points) {
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x);
+      maxY = Math.max(maxY, p.y);
+    }
+  }
+  let cursor = minX === Infinity ? { x: 0, y: 0 } : { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+
+  const result: EmbObject[] = [];
+  for (const key of colorOrder) {
+    const remaining = groups.get(key)!.slice();
+    while (remaining.length > 0) {
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      let bestRotate = 0;
+      let bestReversed = false;
+      for (let i = 0; i < remaining.length; i++) {
+        const o = remaining[i];
+        if (o.kind === 'fill') {
+          for (let v = 0; v < o.points.length; v++) {
+            const d = dist(cursor, o.points[v]);
+            if (d < bestDist) {
+              bestDist = d;
+              bestIdx = i;
+              bestRotate = v;
+              bestReversed = false;
+            }
+          }
+        } else {
+          const dStart = dist(cursor, o.points[0]);
+          const dEnd = dist(cursor, o.points[o.points.length - 1]);
+          if (dStart < bestDist) {
+            bestDist = dStart;
+            bestIdx = i;
+            bestReversed = false;
+          }
+          if (dEnd < bestDist) {
+            bestDist = dEnd;
+            bestIdx = i;
+            bestReversed = true;
+          }
+        }
+      }
+      const chosen = remaining.splice(bestIdx, 1)[0];
+      let points = chosen.points;
+      if (chosen.kind === 'fill' && bestRotate > 0) {
+        points = [...points.slice(bestRotate), ...points.slice(0, bestRotate)];
+      } else if (bestReversed) {
+        points = [...points].reverse();
+      }
+      const finalObj = points === chosen.points ? chosen : { ...chosen, points };
+      result.push(finalObj);
+      cursor = finalObj.points[finalObj.points.length - 1];
+    }
+  }
+  return result;
+}
 
 function bboxOf(o: EmbObject): { minX: number; minY: number; maxX: number; maxY: number } {
   const flat = flattenPath(o.points, o.kind === 'fill');
@@ -124,6 +215,8 @@ function reducer(state: Document, action: Action): Document {
         }),
       };
     }
+    case 'OPTIMIZE_STITCH_ORDER':
+      return { ...state, objects: optimizeStitchOrder(state.objects) };
     case 'SET_HOOP':
       return { ...state, hoop: action.hoop };
     case 'SET_NAME':

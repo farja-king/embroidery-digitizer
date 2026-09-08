@@ -1,14 +1,35 @@
+import { useRef } from 'react';
 import { useStore, makeId } from '../state/store';
 
 const KIND_LABEL: Record<string, string> = { running: 'Running', satin: 'Satin', fill: 'Fill' };
 
 export default function ObjectsPanel() {
-  const { doc, dispatch, selectedId, setSelectedId, selectedIds } = useStore();
+  const { doc, dispatch, selectedId, setSelectedId, selectedIds, setSelectedIds } = useStore();
+  // Range-select anchor for Shift+click — the last item picked by a plain or
+  // Ctrl+click, matching the usual file-manager/list convention: Shift extends
+  // from this anchor without moving it, so repeated Shift+clicks (even to a point
+  // earlier than the previous one) keep resizing the same range.
+  const anchorRef = useRef<number | null>(null);
 
   const move = (index: number, dir: -1 | 1) => {
     const to = index + dir;
     if (to < 0 || to >= doc.objects.length) return;
     dispatch({ type: 'REORDER', fromIndex: index, toIndex: to });
+  };
+
+  const selectRow = (e: React.MouseEvent, index: number, id: string) => {
+    if (e.shiftKey && anchorRef.current !== null) {
+      const [lo, hi] = anchorRef.current < index ? [anchorRef.current, index] : [index, anchorRef.current];
+      setSelectedIds(doc.objects.slice(lo, hi + 1).map((o) => o.id));
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedIds(selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id]);
+      anchorRef.current = index;
+      return;
+    }
+    setSelectedId(id);
+    anchorRef.current = index;
   };
 
   return (
@@ -17,7 +38,7 @@ export default function ObjectsPanel() {
       {doc.objects.length === 0 && <p className="muted">No objects yet. Pick a tool and start drawing.</p>}
       <ul className="object-list">
         {doc.objects.map((o, i) => (
-          <li key={o.id} className={selectedIds.includes(o.id) ? 'selected' : ''} onClick={() => setSelectedId(o.id)}>
+          <li key={o.id} className={selectedIds.includes(o.id) ? 'selected' : ''} onClick={(e) => selectRow(e, i, o.id)}>
             <span className="obj-swatch" style={{ background: `rgb(${o.color.r},${o.color.g},${o.color.b})` }} />
             <span className="obj-name">
               {i + 1}. {o.name} <em>{KIND_LABEL[o.kind]}</em>

@@ -98,6 +98,14 @@ export default function HeaderBar() {
         </button>
       </div>
 
+      <button
+        onClick={() => dispatch({ type: 'OPTIMIZE_STITCH_ORDER' })}
+        disabled={doc.objects.length < 2}
+        title="Re-sequence objects to minimize thread jumps and color changes — groups each color together and starts each shape from whichever end is closest to the last one (Hatch's 'Apply Closest Join')"
+      >
+        Optimize order
+      </button>
+
       <div className="spacer" />
 
       <button className="preview-btn" onClick={() => setShowPlayback(true)}>
