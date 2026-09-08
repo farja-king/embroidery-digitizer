@@ -1,8 +1,10 @@
+import { useEffect, useState } from 'react';
 import { useStore, type AlignMode } from '../state/store';
-import type { EmbObject, StitchKind, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
+import type { EmbObject, RGB, StitchKind, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
 import { autoUnderlayType, normalizeUnderlay } from '../stitching/underlay';
 import { pointsForKindChange } from '../stitching/kindConvert';
 import { flattenPath, rotatePoint } from '../stitching/geometry';
+import { MADEIRA_CLASSIC_40, MADEIRA_POLYNEON } from '../data/threadPalettes';
 
 const KIND_LABELS: Record<StitchKind, string> = { running: 'Running', satin: 'Satin', fill: 'Fill' };
 
@@ -110,6 +112,68 @@ function TwoPassUnderlayFields({
         onChange={(pass2) => onChange({ ...normalized, pass2 })}
       />
     </>
+  );
+}
+
+const ALL_THREADS = [
+  ...MADEIRA_CLASSIC_40.map((c) => ({ ...c, palette: 'Classic 40' })),
+  ...MADEIRA_POLYNEON.map((c) => ({ ...c, palette: 'Polyneon' })),
+];
+
+function findThreadByCode(code: string) {
+  const trimmed = code.trim();
+  if (!trimmed) return undefined;
+  return ALL_THREADS.find((t) => t.code === trimmed);
+}
+
+function findThreadByColor(c: RGB) {
+  return ALL_THREADS.find((t) => t.r === c.r && t.g === c.g && t.b === c.b);
+}
+
+// Lets typing a Madeira code (from either palette) set the exact color directly,
+// instead of only being able to pick one via the swatch picker's separate modal.
+// The input always displays whatever code matches the object's *current* color —
+// including switching back to blank the moment a manual color-picker edit moves
+// it off that exact RGB, so it never shows a code that's no longer accurate.
+function ThreadCodeField({ obj, update }: { obj: EmbObject; update: (patch: Partial<EmbObject>) => void }) {
+  const matched = findThreadByColor(obj.color);
+  const [text, setText] = useState(matched?.code ?? '');
+  const [notFound, setNotFound] = useState(false);
+
+  useEffect(() => {
+    setText(matched?.code ?? '');
+    setNotFound(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [obj.id, obj.color.r, obj.color.g, obj.color.b]);
+
+  const commit = () => {
+    const found = findThreadByCode(text);
+    if (found) {
+      update({ color: { r: found.r, g: found.g, b: found.b } });
+      setNotFound(false);
+    } else if (text.trim()) {
+      setNotFound(true);
+    }
+  };
+
+  return (
+    <label className="field">
+      Thread code
+      <input
+        value={text}
+        placeholder="e.g. 1528"
+        onChange={(e) => {
+          setText(e.target.value);
+          setNotFound(false);
+        }}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        }}
+      />
+      {matched && <span className="thread-code-hint">{matched.name} ({matched.palette})</span>}
+      {notFound && <span className="thread-code-hint thread-code-error">Not found in Classic 40 or Polyneon</span>}
+    </label>
   );
 }
 
@@ -270,6 +334,7 @@ export default function PropertiesPanel() {
         Thread color
         <input type="color" value={rgbToHex(obj.color)} onChange={(e) => update({ color: hexToRgb(e.target.value) })} />
       </label>
+      <ThreadCodeField obj={obj} update={update} />
 
       <TransformFields obj={obj} update={update} />
 

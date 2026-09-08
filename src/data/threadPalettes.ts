@@ -372,6 +372,12 @@ export const MADEIRA_CLASSIC_40: ThreadColor[] = [
 ];
 
 export const MADEIRA_POLYNEON: ThreadColor[] = [
+  // Not in the Ink/Stitch source this chart was built from (a known gap in that
+  // data, confirmed by search — Ink/Stitch's Polyneon file starts at 1610).
+  // RGB here is an approximation of "sky blue" consistent with this chart's other
+  // blues (1871 Sky Blue, 1953 Sky Blue), not a manufacturer-published value —
+  // Madeira doesn't publish official screen RGB, only physical color cards.
+  { code: '1528', name: 'Serene Sky', r: 141, g: 196, b: 224 },
   { code: '1610', name: 'Celestial Blue', r: 183, g: 195, b: 197 },
   { code: '1611', name: 'Highrise', r: 158, g: 169, b: 177 },
   { code: '1612', name: 'Blue Fog', r: 151, g: 166, b: 180 },
