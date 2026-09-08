@@ -1,5 +1,5 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { centroid, flattenPath, normalAt, offsetPolygon, perimeterBridge, resamplePath, rotatePoint, straightBridge, tatamiRows } from './geometry';
+import { bridgeRowGaps, centroid, flattenPath, normalAt, offsetPolygon, pathLength, perimeterBridge, resamplePath, rotatePoint, straightBridge, tatamiRows } from './geometry';
 import { autoUnderlayType, fillUnderlay, normalizeUnderlay, satinUnderlay } from './underlay';
 
 /** When both a start and end point are set, splits the fill into two independently
@@ -15,7 +15,14 @@ import { autoUnderlayType, fillUnderlay, normalizeUnderlay, satinUnderlay } from
  * The inter-region travel always walks the shape's own perimeter (never a
  * straight line) because by the time it happens the near region is already
  * fully stitched -- a straight bridge there would necessarily cut back across
- * that finished fill, which this technique exists specifically to avoid. */
+ * that finished fill, which this technique exists specifically to avoid.
+ * Which side of the shape each region's boundary-adjacent row starts/ends on
+ * is otherwise just whatever an arbitrary row count happens to produce --
+ * left uncontrolled, that can put the near region's last stitch and the far
+ * region's first stitch on opposite sides of the shape, forcing the travel
+ * the long way around even when both points are actually near the same
+ * side. Both regions' row-start parity is tried in every combination and
+ * whichever pairing gives the shortest actual perimeter travel is kept. */
 function splitFillRows(
   polygon: Point[],
   angle: number,
@@ -35,26 +42,35 @@ function splitFillRows(
   // Whichever shape extreme the start point sits closer to is the "near" side --
   // the region that gets stitched first, straight from the start point.
   const nearIsMin = Math.abs(startLocalY - shapeMinY) <= Math.abs(startLocalY - shapeMaxY);
-
-  let nearRows: Point[];
-  let farRows: Point[];
   // Both calls share splitY as their row-grid anchor so the row nearest the
   // boundary on each side lands exactly rowSpacing/2 from it -- without this,
   // each region anchors independently to its own edge and can leave up to a
   // full rowSpacing gap (double the normal row pitch) uncovered right at the
   // seam, which shows up as a visible gap line where the two regions meet.
-  if (nearIsMin) {
-    // Ascending row order (tatamiRows' natural direction) already runs from the
-    // shape's min extreme up to the split row -- exactly start-side-first.
-    nearRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [shapeMinY, splitY], splitY);
-    // The far region's natural ascending order runs split-row-to-max, which
-    // starts at the split (wrong end) -- reverse so it starts at the far max
-    // extreme and finishes back at the split row, next to the end point.
-    farRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [splitY, shapeMaxY], splitY).reverse();
-  } else {
-    nearRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [splitY, shapeMaxY], splitY).reverse();
-    farRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [shapeMinY, splitY], splitY);
+  const nearRange: [number, number] = nearIsMin ? [shapeMinY, splitY] : [splitY, shapeMaxY];
+  const farRange: [number, number] = nearIsMin ? [splitY, shapeMaxY] : [shapeMinY, splitY];
+  // Near region's ascending order already runs start-side-first only when its
+  // range starts at the shape's own min extreme; otherwise it needs reversing
+  // so it still starts at the extreme (near the start point). Far region's
+  // ascending order always starts at the split (the wrong end), so it always
+  // needs reversing to start at the far extreme and finish back at the split.
+  const nearNeedsReverse = !nearIsMin;
+
+  let best: { near: Point[]; far: Point[]; cost: number } | null = null;
+  for (const nearLtr of [true, false]) {
+    for (const farLtr of [true, false]) {
+      let near = tatamiRows(polygon, angle, rowSpacing, stitchLength, nearRange, splitY, nearLtr);
+      if (nearNeedsReverse) near = near.reverse();
+      const far = tatamiRows(polygon, angle, rowSpacing, stitchLength, farRange, splitY, farLtr).reverse();
+      const cost =
+        near.length && far.length
+          ? pathLength(perimeterBridge(polygon, near[near.length - 1], far[0], step))
+          : 0;
+      if (!best || cost < best.cost) best = { near, far, cost };
+    }
   }
+  const nearRows = best!.near;
+  const farRows = best!.far;
 
   if (nearRows.length === 0) return farRows;
   if (farRows.length === 0) return nearRows;
@@ -170,24 +186,43 @@ function fillStitches(
       if (shouldReverse) rows.reverse();
     }
   }
+  // A scan row on a concave shape (an L, a letter, a star's notch) can have more
+  // than one disconnected span -- left alone, the row list jumps straight from
+  // the end of one span to the start of the next, a stray stitch cutting across
+  // whatever open space sits between them. Route any such gap along the shape's
+  // own boundary instead, same reasoning as every other bridge in this function.
+  const maxRowGap = Math.max(stitchLength, rowSpacing) * 3;
+  rows = bridgeRowGaps(rows, expanded, maxRowGap, step);
+  // Entry: from the chosen start point (if any) to wherever generation actually
+  // begins -- the underlay's own first stitch when there's underlay, otherwise
+  // the top-layer scan's first row point directly. Not every underlay type
+  // aligns its own first stitch to the entry point the way edge-run/center-run
+  // do (plain 'tatami' rows scan from the shape's own minY regardless of where
+  // the user put the start marker), so this bridge is needed even when
+  // underlay is present, not only when it isn't.
+  const genesis = underlayPts.length ? underlayPts[0] : rows[0];
+  if (startPoint) {
+    out.push({ x: startPoint.x, y: startPoint.y, command: 'STITCH' });
+    if (genesis && (Math.abs(genesis.x - startPoint.x) > 0.05 || Math.abs(genesis.y - startPoint.y) > 0.05)) {
+      for (const p of bridge(polygon, startPoint, genesis, step)) out.push({ x: p.x, y: p.y, command: 'STITCH' });
+    }
+  }
+  for (const p of underlayPts) out.push({ x: p.x, y: p.y, command: 'STITCH' });
   // The underlay is a there-and-back trip: it starts at the entry point, delivers
   // out to the far side, and returns -- so it always ends back at (or very near)
   // the start point. The top layer picks up from exactly there and scans across,
   // finishing near the end point (already chosen above by picking whichever scan
   // direction lands its natural finish closest to the target). What's bridged
   // here is only the handoff in between: wherever the underlay actually left off
-  // (or the bare start point, if there's no underlay) to wherever the top-layer
-  // scan actually begins.
-  const entry = underlayPts.length ? underlayPts[underlayPts.length - 1] : startPoint;
-  const topFirst = rows[0];
-  if (!underlayPts.length && startPoint) {
-    out.push({ x: startPoint.x, y: startPoint.y, command: 'STITCH' });
-  } else {
-    for (const p of underlayPts) out.push({ x: p.x, y: p.y, command: 'STITCH' });
-  }
-  if (entry && topFirst && (Math.abs(entry.x - topFirst.x) > 0.05 || Math.abs(entry.y - topFirst.y) > 0.05)) {
-    for (const p of bridge(polygon, entry, topFirst, step)) {
-      out.push({ x: p.x, y: p.y, command: 'STITCH' });
+  // to wherever the top-layer scan actually begins. Only relevant when there's
+  // underlay -- with none, the entry bridge above already reaches rows[0] directly.
+  if (underlayPts.length) {
+    const entry = underlayPts[underlayPts.length - 1];
+    const topFirst = rows[0];
+    if (topFirst && (Math.abs(entry.x - topFirst.x) > 0.05 || Math.abs(entry.y - topFirst.y) > 0.05)) {
+      for (const p of bridge(polygon, entry, topFirst, step)) {
+        out.push({ x: p.x, y: p.y, command: 'STITCH' });
+      }
     }
   }
   for (const p of rows) out.push({ x: p.x, y: p.y, command: 'STITCH' });

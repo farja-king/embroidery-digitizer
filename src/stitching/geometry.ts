@@ -230,6 +230,29 @@ export function straightBridge(from: Point, to: Point, step: number): Point[] {
   return resamplePath([from, to], Math.max(0.2, step)).slice(1);
 }
 
+/** Fixes up a scanline row-fill's raw output for concave shapes: a single scan row
+ * can have more than one disconnected span (e.g. both arms of an L, or either side
+ * of a star's notch), and consecutive spans get concatenated directly with no
+ * awareness that the straight line between them cuts outside the polygon, across
+ * open space. Any consecutive pair further apart than `maxGap` gets routed along
+ * the polygon's own boundary instead (same `perimeterBridge` reasoning used for
+ * every other bridge in this fill engine), so what would otherwise be one long
+ * stray straight stitch across a notch instead hugs the actual outline. */
+export function bridgeRowGaps(points: Point[], polygon: Point[], maxGap: number, step: number): Point[] {
+  if (points.length < 2) return points;
+  const out: Point[] = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const cur = points[i];
+    if (Math.hypot(cur.x - prev.x, cur.y - prev.y) > maxGap) {
+      out.push(...perimeterBridge(polygon, prev, cur, step));
+    } else {
+      out.push(cur);
+    }
+  }
+  return out;
+}
+
 export function rotatePoint(p: Point, origin: Point, angleDeg: number): Point {
   const a = (angleDeg * Math.PI) / 180;
   const cos = Math.cos(a);
@@ -320,8 +343,21 @@ export function scanlineSpans(polygon: Point[], rowY: number): number[] {
  * `rowSpacing/2` from the boundary rather than up to a full `rowSpacing` short
  * of it (which independently-anchored grids would leave as a visible double-wide
  * gap right where the two regions meet). Defaults to the shape's own min-Y,
- * i.e. unchanged behavior for every non-split caller. */
-export function tatamiRows(polygon: Point[], angle: number, rowSpacing: number, stitchLength: number, yRange?: [number, number], anchorY?: number): Point[] {
+ * i.e. unchanged behavior for every non-split caller. `startLeftToRight`
+ * flips which side every row starts on (and therefore which side the whole
+ * output's first/last stitch lands on) without changing anything else about
+ * the scan -- used to pick whichever parity puts a split region's boundary
+ * row on the same side as the region it needs to hand off to, instead of
+ * being at the mercy of row count. */
+export function tatamiRows(
+  polygon: Point[],
+  angle: number,
+  rowSpacing: number,
+  stitchLength: number,
+  yRange?: [number, number],
+  anchorY?: number,
+  startLeftToRight = true,
+): Point[] {
   if (polygon.length < 3) return [];
   const c = centroid(polygon);
   const rotated = polygon.map((p) => rotatePoint(p, c, -angle));
@@ -337,7 +373,7 @@ export function tatamiRows(polygon: Point[], angle: number, rowSpacing: number, 
   const firstY = anchor + spacing / 2 + Math.ceil((minY - (anchor + spacing / 2)) / spacing) * spacing;
 
   const out: Point[] = [];
-  let rowIndex = 0;
+  let rowIndex = startLeftToRight ? 0 : 1;
   for (let y = firstY; y < maxY; y += spacing) {
     const xs = scanlineSpans(rotated, y);
     for (let i = 0; i + 1 < xs.length; i += 2) {

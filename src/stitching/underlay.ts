@@ -1,5 +1,5 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { dist, normalAt, offsetPolygon, polygonArea, resamplePath, tatamiRows } from './geometry';
+import { bridgeRowGaps, dist, normalAt, offsetPolygon, polygonArea, resamplePath, tatamiRows } from './geometry';
 
 // A fill underlay sits entirely inside the top stitching's coverage — roughly one
 // thread width in from the digitized outline — so none of its own stitches (the
@@ -200,13 +200,21 @@ export function fillUnderlay(polygon: Point[], topAngle: number, settings: Under
       // two perimeter edges unstitched by the underlay; add edge-run as an
       // explicit Underlay 2 pass when that stabilization is wanted, rather
       // than having "tatami" silently mean something extra.
-      return tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5);
+      // On a concave shape a scan row can have more than one disconnected span
+      // (both arms of an L, either side of a notch) -- bridgeRowGaps routes any
+      // such gap along the shape's own boundary instead of a stray straight
+      // stitch across the open space between them.
+      return bridgeRowGaps(tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5), inset, spacing * 4, spacing);
     case 'double-tatami': {
       // One pass perpendicular to the top stitching, one parallel to it -- a crossed
       // grid (horizontal one way, vertical the other), not the same direction twice.
+      // bridgeRowGaps runs on the whole concatenation (not just within each pass
+      // individually) since the handoff between edge-run and passA, and between
+      // passA and passB, is exactly the same kind of gap as within a single pass.
       const passA = tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5);
       const passB = tatamiRows(inset, topAngle, spacing, spacing * 1.5);
-      return [...edgeRunFill(inset, spacing, entryPoint), ...passA, ...passB];
+      const combined = [...edgeRunFill(inset, spacing, entryPoint), ...passA, ...passB];
+      return bridgeRowGaps(combined, inset, spacing * 4, spacing);
     }
     // zigzag/double-zigzag are a column (satin) concept -- an angled bounce stitch --
     // not a fill one; there's no UI path to select them for a fill, but old saved data
