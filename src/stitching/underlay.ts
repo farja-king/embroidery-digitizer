@@ -1,5 +1,12 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { dist, normalAt, polygonArea, resamplePath, tatamiRows } from './geometry';
+import { dist, normalAt, offsetPolygon, polygonArea, resamplePath, tatamiRows } from './geometry';
+
+// A fill underlay sits entirely inside the top stitching's coverage — roughly one
+// thread width in from the digitized outline — so none of its own stitches (the
+// scanline rows' row-ends, or an edge-run pass tracing the perimeter) can end up
+// poking out past where the top layer actually covers, which reads as a ragged,
+// not-flush edge even though the top stitching itself is fine.
+const UNDERLAY_INSET_MM = 0.4;
 
 const NO_UNDERLAY: UnderlaySettings = { mode: 'manual', type: 'none', spacing: 2.5 };
 
@@ -25,7 +32,12 @@ export function autoUnderlayType(obj: EmbObject): UnderlayType {
   if (obj.kind === 'fill') {
     const area = Math.abs(polygonArea(obj.points));
     if (area < 30) return 'edge-run'; // small shape: just walk the perimeter
-    if (area < 400) return 'tatami';
+    // Double-tatami's two crossed passes read as visibly "busy" next to the top
+    // stitching in preview (each pass alone is properly sparse relative to the
+    // top rows, but combined they can look like broken/uneven coverage) -- kept
+    // for genuinely large fills where that extra cross-stability actually
+    // matters, not defaulted to for anything mid-sized.
+    if (area < 900) return 'tatami';
     return 'double-tatami';
   }
   return 'none';
@@ -151,30 +163,35 @@ export function satinUnderlay(centerline: Point[], width: number, settings: Unde
  * so tatami underlay can run perpendicular to it as is standard practice. */
 export function fillUnderlay(polygon: Point[], topAngle: number, settings: UnderlaySettings, type: UnderlayType): Point[] {
   if (type === 'none' || polygon.length < 3) return [];
+  const inset = offsetPolygon(polygon, -UNDERLAY_INSET_MM);
   const spacing = settings.spacing;
   switch (type) {
     case 'center-run':
-      return centerRun(polygon, true, spacing);
+      return centerRun(inset, true, spacing);
     case 'edge-run':
-      return edgeRunFill(polygon, spacing);
+      return edgeRunFill(inset, spacing);
     case 'tatami':
-      // Straight rows across the area, perpendicular to the top stitching.
-      return tatamiRows(polygon, topAngle + 90, spacing, spacing * 1.5);
+      // A scanline fill only touches two of the four sides at each row's endpoint —
+      // it never actually walks along the other two, which is exactly the "gap" a
+      // plain tatami underlay leaves at the perimeter. Adding the perimeter trace
+      // here (rather than requiring the user to add it as a separate Underlay 2
+      // pass) makes "tatami" mean fully-stabilized-including-the-edge by default.
+      return [...edgeRunFill(inset, spacing), ...tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5)];
     case 'double-tatami': {
       // One pass perpendicular to the top stitching, one parallel to it -- a crossed
       // grid (horizontal one way, vertical the other), not the same direction twice.
-      const passA = tatamiRows(polygon, topAngle + 90, spacing, spacing * 1.5);
-      const passB = tatamiRows(polygon, topAngle, spacing, spacing * 1.5);
-      return [...passA, ...passB];
+      const passA = tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5);
+      const passB = tatamiRows(inset, topAngle, spacing, spacing * 1.5);
+      return [...edgeRunFill(inset, spacing), ...passA, ...passB];
     }
     // zigzag/double-zigzag are a column (satin) concept -- an angled bounce stitch --
     // not a fill one; there's no UI path to select them for a fill, but old saved data
     // could have one, so fall back to the nearest fill equivalent rather than no-op.
     case 'zigzag':
-      return tatamiRows(polygon, topAngle + 90, spacing, spacing * 1.5);
+      return tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5);
     case 'double-zigzag': {
-      const passA = tatamiRows(polygon, topAngle + 90, spacing, spacing * 1.5);
-      const passB = tatamiRows(polygon, topAngle, spacing, spacing * 1.5);
+      const passA = tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5);
+      const passB = tatamiRows(inset, topAngle, spacing, spacing * 1.5);
       return [...passA, ...passB];
     }
     default:

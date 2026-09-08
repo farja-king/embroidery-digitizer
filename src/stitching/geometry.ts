@@ -108,6 +108,50 @@ export function centroid(points: Point[]): Point {
   return { x: x / points.length, y: y / points.length };
 }
 
+/** Offsets a closed polygon outward (positive `amount`) or inward (negative) by
+ * moving each vertex along the mitered bisector of its two adjacent edge normals,
+ * scaled by 1/cos(half the angle between them) so the *edges themselves* end up
+ * exactly `amount` away (a plain averaged-and-renormalized bisector, without this
+ * scale, undershoots on anything but a straight run — a square corner only moved
+ * ~0.71x the requested amount). Capped so a very acute corner doesn't spike out
+ * absurdly far, standard practice for polygon offsetting. Not arc-accurate on
+ * sharp corners, but adequate at the scale this is actually used for (pull
+ * compensation, underlay inset). Direction is resolved against the centroid
+ * rather than assumed from winding order, since a polygon drawn by clicking
+ * points can wind either way. */
+export function offsetPolygon(polygon: Point[], amount: number): Point[] {
+  if (Math.abs(amount) < 1e-9 || polygon.length < 3) return polygon;
+  const n = polygon.length;
+  const c = centroid(polygon);
+  const unitNormal = (a: Point, b: Point): Point => {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    return { x: -dy / len, y: dx / len };
+  };
+  return polygon.map((p, i) => {
+    const prev = polygon[(i - 1 + n) % n];
+    const next = polygon[(i + 1) % n];
+    const n1 = unitNormal(prev, p);
+    const n2 = unitNormal(p, next);
+    let bx = n1.x + n2.x;
+    let by = n1.y + n2.y;
+    const blen = Math.hypot(bx, by) || 1;
+    bx /= blen;
+    by /= blen;
+    const cosHalfAngle = bx * n1.x + by * n1.y; // bisector·n1 = cos(half the angle between n1,n2)
+    const miterScale = Math.min(4, 1 / Math.max(0.25, cosHalfAngle));
+    let nx = bx * miterScale;
+    let ny = by * miterScale;
+    const toVertex = { x: p.x - c.x, y: p.y - c.y };
+    if (nx * toVertex.x + ny * toVertex.y < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    return { x: p.x + nx * amount, y: p.y + ny * amount };
+  });
+}
+
 export function rotatePoint(p: Point, origin: Point, angleDeg: number): Point {
   const a = (angleDeg * Math.PI) / 180;
   const cos = Math.cos(a);

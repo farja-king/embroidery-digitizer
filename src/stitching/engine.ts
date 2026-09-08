@@ -1,5 +1,5 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { flattenPath, normalAt, resamplePath, tatamiRows } from './geometry';
+import { flattenPath, normalAt, offsetPolygon, resamplePath, tatamiRows } from './geometry';
 import { autoUnderlayType, fillUnderlay, normalizeUnderlay, satinUnderlay } from './underlay';
 
 /** Runs both underlay passes and concatenates their stitches, pass 1 then pass 2.
@@ -66,11 +66,17 @@ function fillStitches(
   rowSpacing: number,
   stitchLength: number,
   underlayPts: Point[],
+  pullCompensation: number,
 ): StitchPoint[] {
   if (polygon.length < 3) return [];
   const out: StitchPoint[] = [];
   for (const p of underlayPts) out.push({ x: p.x, y: p.y, command: 'STITCH' });
-  for (const p of tatamiRows(polygon, angle, rowSpacing, stitchLength)) {
+  // Dense fill stitching pulls the fabric in toward the shape's center, so the top
+  // layer is generated slightly past the digitized outline to come out true-to-size
+  // on fabric — the underlay above deliberately stays on the original boundary
+  // (actually inset from it), so it can never poke out past this expanded edge.
+  const expanded = offsetPolygon(polygon, Math.max(0, pullCompensation));
+  for (const p of tatamiRows(expanded, angle, rowSpacing, stitchLength)) {
     out.push({ x: p.x, y: p.y, command: 'STITCH' });
   }
   return out;
@@ -92,7 +98,7 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
       const underlayPts = resolveUnderlay(obj, obj.fill.underlay, (settings, type) =>
         fillUnderlay(flat, obj.fill.angle, settings, type),
       );
-      return fillStitches(flat, obj.fill.angle, obj.fill.rowSpacing, obj.fill.stitchLength, underlayPts);
+      return fillStitches(flat, obj.fill.angle, obj.fill.rowSpacing, obj.fill.stitchLength, underlayPts, obj.fill.pullCompensation ?? 0);
     }
     default:
       return [];
@@ -176,7 +182,11 @@ export function buildPattern(objects: EmbObject[], trimThresholdMm = 3): BuiltPa
       // placed once we've already arrived, which is the convention every format below expects.
       const hops = splitLongJump(cursor, first);
       for (const hop of hops) stitches.push({ x: hop.x, y: hop.y, command: 'JUMP' });
-      if (jumpDist >= trimThresholdMm) stitches.push({ x: first.x, y: first.y, command: 'TRIM' });
+      // Never trim before the very first stitch of the whole design: nothing has
+      // been sewn yet, so there's no trailing thread to cut -- just a positioning
+      // jump. Showed up as a scissor icon sitting right on top of the design's own
+      // start marker, which read as "it's cutting before it even begins."
+      if (started && jumpDist >= trimThresholdMm) stitches.push({ x: first.x, y: first.y, command: 'TRIM' });
     }
 
     for (const sp of objStitches) stitches.push(sp);

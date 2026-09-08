@@ -79,6 +79,15 @@ export interface FillParams {
   rowSpacing: number; // mm between rows
   stitchLength: number; // mm along each row
   underlay: TwoPassUnderlay;
+  // mm the top stitching's outer edge is pushed outward beyond the digitized
+  // outline, same idea as satin's pullCompensation — dense fill stitching pulls
+  // fabric in toward the shape's center, so an uncompensated fill comes out
+  // slightly smaller than drawn. The underlay is deliberately left on the
+  // original (unexpanded) boundary, so it stays safely inset under the top
+  // stitching instead of its own edge stitches poking past where the top layer
+  // covers them — the two together read as a clean edge instead of the ragged
+  // look of both layers' stitches landing at slightly different boundaries.
+  pullCompensation: number;
 }
 
 export interface EmbObject {

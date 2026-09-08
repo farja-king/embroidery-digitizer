@@ -83,10 +83,11 @@ export default function Canvas() {
     | { kind: 'move-object'; id: string; startMm: Point; original: PathPoint[] }
     | { kind: 'move-multi'; ids: string[]; startMm: Point; originals: Map<string, PathPoint[]> }
     | { kind: 'move-vertex'; id: string; index: number }
+    | { kind: 'move-endpoint'; id: string; which: 'start' | 'end' }
     | { kind: 'rect'; corner: Point; ellipse: boolean }
     | { kind: 'marquee'; corner: Point }
     | { kind: 'resize'; handle: HandleDir; anchor: Point; startCorner: Point; originals: Map<string, PathPoint[]> }
-    | { kind: 'rotate'; center: Point; startAngle: number; originals: Map<string, PathPoint[]> }
+    | { kind: 'rotate'; center: Point; startAngle: number; originals: Map<string, PathPoint[]>; originalFillAngles: Map<string, number> }
     | null
   >(null);
 
@@ -216,6 +217,36 @@ export default function Canvas() {
     [view.scale],
   );
 
+  // The start/end markers (green/red dots) sit exactly on the object's own first
+  // and last point, same as two of its vertex handles — hit-tested with the same
+  // radius so grabbing one among a dense cluster of ordinary vertices/stitch dots
+  // still reliably lands on the marker, not a neighboring point.
+  const getEndpointMarkerAt = useCallback(
+    (p: Point, obj: EmbObject): 'start' | 'end' | null => {
+      if (obj.points.length < 2) return null;
+      const thresholdMm = VERTEX_HIT_PX / view.scale;
+      const start = obj.points[0];
+      const end = obj.points[obj.points.length - 1];
+      if (Math.hypot(start.x - p.x, start.y - p.y) < thresholdMm) return 'start';
+      if (Math.hypot(end.x - p.x, end.y - p.y) < thresholdMm) return 'end';
+      return null;
+    },
+    [view.scale],
+  );
+
+  const nearestVertexIndex = (p: Point, points: PathPoint[]): number => {
+    let best = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < points.length; i++) {
+      const d = Math.hypot(points[i].x - p.x, points[i].y - p.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = i;
+      }
+    }
+    return best;
+  };
+
   // Where a new point would land if the user chose "Add point here" for a right-click
   // that hit the object's outline but not an existing vertex — the raw (sparse)
   // points array, not the flattened curve, since that's what's actually edited.
@@ -311,7 +342,16 @@ export default function Canvas() {
 
         if (Math.hypot(px - rotateHandle.x, py - rotateHandle.y) < HANDLE_HIT_PX) {
           const center = { x: (selectionBBox.minX + selectionBBox.maxX) / 2, y: (selectionBBox.minY + selectionBBox.maxY) / 2 };
-          dragRef.current = { kind: 'rotate', center, startAngle: Math.atan2(p.y - center.y, p.x - center.x), originals };
+          const originalFillAngles = new Map(
+            doc.objects.filter((o) => selectedIds.includes(o.id) && o.kind === 'fill').map((o) => [o.id, o.fill.angle]),
+          );
+          dragRef.current = {
+            kind: 'rotate',
+            center,
+            startAngle: Math.atan2(p.y - center.y, p.x - center.x),
+            originals,
+            originalFillAngles,
+          };
           return;
         }
         for (const dir of HANDLE_DIRS) {
@@ -330,6 +370,15 @@ export default function Canvas() {
 
       const selected = doc.objects.find((o) => o.id === selectedId);
       if (selected && !selected.locked) {
+        // Checked before the general vertex hit-test: start/end markers sit
+        // exactly on top of the first/last vertex, and dragging one means "make
+        // this vertex the start/end" (a live version of the same context-menu
+        // actions), not "move this point's position" like an ordinary vertex drag.
+        const marker = getEndpointMarkerAt(p, selected);
+        if (marker) {
+          dragRef.current = { kind: 'move-endpoint', id: selected.id, which: marker };
+          return;
+        }
         const vi = getVertexAt(p, selected);
         if (vi >= 0) {
           dragRef.current = { kind: 'move-vertex', id: selected.id, index: vi };
@@ -390,6 +439,33 @@ export default function Canvas() {
         const pts = obj.points.map((pt, i) => (i === drag.index ? { ...p, type: pt.type } : pt));
         dispatch({ type: 'UPDATE_OBJECT', id: drag.id, patch: { points: pts } });
       }
+    } else if (drag.kind === 'move-endpoint') {
+      const obj = doc.objects.find((o) => o.id === drag.id);
+      if (obj) {
+        const pts = obj.points;
+        const n = pts.length;
+        if (obj.kind === 'fill') {
+          // A closed loop's shape is unchanged by rotation, so any vertex can
+          // freely become the new start/end -- same rotation math as the context
+          // menu's Set as start/end point, just driven live by the drag position.
+          const targetIndex = nearestVertexIndex(p, pts);
+          const rotateBy = drag.which === 'start' ? targetIndex : (targetIndex + 1) % n;
+          if (rotateBy !== 0) {
+            const rotated = [...pts.slice(rotateBy), ...pts.slice(0, rotateBy)];
+            dispatch({ type: 'UPDATE_OBJECT', id: drag.id, patch: { points: rotated } });
+          }
+        } else {
+          // An open path's point order *is* its shape -- only the two actual
+          // endpoints are valid start/end positions. Dragging past the midpoint
+          // toward the other end reverses the path (same as "Reverse direction");
+          // dragging back snaps right back, since there's nowhere else to land.
+          const distToStart = Math.hypot(pts[0].x - p.x, pts[0].y - p.y);
+          const distToEnd = Math.hypot(pts[n - 1].x - p.x, pts[n - 1].y - p.y);
+          const nearEnd = distToEnd < distToStart;
+          const shouldBeReversed = drag.which === 'start' ? nearEnd : !nearEnd;
+          if (shouldBeReversed) dispatch({ type: 'UPDATE_OBJECT', id: drag.id, patch: { points: [...pts].reverse() } });
+        }
+      }
     } else if (drag.kind === 'rect') {
       const target = e.shiftKey ? constrainToSquare(drag.corner, p) : p;
       setDrawingPoints(rectPoints(drag.corner, target, drag.ellipse));
@@ -435,11 +511,20 @@ export default function Canvas() {
       let deltaDeg = ((angle - drag.startAngle) * 180) / Math.PI;
       if (e.shiftKey) deltaDeg = Math.round(deltaDeg / 15) * 15;
       for (const [id, original] of drag.originals) {
-        dispatch({
-          type: 'UPDATE_OBJECT',
-          id,
-          patch: { points: original.map((pt) => ({ ...rotatePoint(pt, drag.center, deltaDeg), type: pt.type })) },
-        });
+        const obj = doc.objects.find((o) => o.id === id);
+        // A fill's row angle is independent of its outline points, so rotating
+        // the shape without also rotating this leaves the tatami rows pointed the
+        // old direction relative to the now-turned edges -- rows land diagonally
+        // across a rotated square instead of parallel to its sides, producing a
+        // ragged, not-flush edge instead of the ends lining up on the boundary.
+        const originalFillAngle = drag.originalFillAngles.get(id);
+        const patch: Partial<EmbObject> = {
+          points: original.map((pt) => ({ ...rotatePoint(pt, drag.center, deltaDeg), type: pt.type })),
+        };
+        if (obj && obj.kind === 'fill' && originalFillAngle !== undefined) {
+          patch.fill = { ...obj.fill, angle: originalFillAngle + deltaDeg };
+        }
+        dispatch({ type: 'UPDATE_OBJECT', id, patch });
       }
     }
     // 'marquee' needs no per-move work: the rectangle is rendered live from
@@ -554,6 +639,28 @@ export default function Canvas() {
     return () => canvas.removeEventListener('wheel', handler);
   }, [view, toDesign]);
 
+  // Belt-and-suspenders alongside the JSX onContextMenu prop below: some browsers/
+  // input combos (right-click via a trackpad gesture, certain Chrome extensions
+  // injecting their own context menu) can still show the native menu even when a
+  // React synthetic contextmenu handler calls preventDefault(), the same class of
+  // gap the wheel handler above had. A native listener is more reliably respected.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handler = (e: MouseEvent) => e.preventDefault();
+    canvas.addEventListener('contextmenu', handler);
+    return () => canvas.removeEventListener('contextmenu', handler);
+  }, []);
+
+  const activeDrag = dragRef.current;
+  const selectedForHover = tool === 'select' ? doc.objects.find((o) => o.id === selectedId) : undefined;
+  // Hover feedback (not just while dragging): a start/end marker sits exactly on
+  // top of an ordinary vertex among what can be hundreds of dense stitch/point
+  // markers, so confirming "yes, this is the marker" before committing to a drag
+  // matters a lot more here than it would for a normal, larger UI target.
+  const hoveredEndpoint =
+    !activeDrag && selectedForHover && !selectedForHover.locked && mousePos ? getEndpointMarkerAt(mousePos, selectedForHover) : null;
+
   // --- Rendering ---
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -608,6 +715,30 @@ export default function Canvas() {
     for (const obj of doc.objects) {
       if (!obj.visible) continue;
       drawObject(ctx, obj, toScreen, view.scale, selectedIds.includes(obj.id), showStitchPreview);
+    }
+
+    // Draggable start (green) / end (red) markers for the primary selection —
+    // grab and drop on any vertex to reassign which point the thread starts/ends
+    // at, live. Slightly larger than an ordinary vertex handle and outlined in
+    // white so they read as distinct targets even sitting on top of a dense
+    // cluster of vertex/stitch dots.
+    if (tool === 'select' && !drawingPoints) {
+      const selectedObj = doc.objects.find((o) => o.id === selectedId);
+      if (selectedObj && selectedObj.visible && selectedObj.points.length >= 2) {
+        const startPt = toScreen(selectedObj.points[0]);
+        const endPt = toScreen(selectedObj.points[selectedObj.points.length - 1]);
+        const drawMarker = (pt: Point, fill: string, hovered: boolean) => {
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, hovered ? 7 : 5.5, 0, Math.PI * 2);
+          ctx.fillStyle = fill;
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        };
+        drawMarker(endPt, '#c0392b', hoveredEndpoint === 'end');
+        drawMarker(startPt, '#2e9e4f', hoveredEndpoint === 'start');
+      }
     }
 
     // Resize/rotate handle frame around the current selection — not while actively
@@ -693,9 +824,8 @@ export default function Canvas() {
       ctx.setLineDash([]);
       for (const p of drawingPoints) drawVertexMarker(ctx, toScreen(p), p.type, '#2f6fed', '#2f6fed');
     }
-  }, [doc, view, size, selectedIds, showStitchPreview, drawingPoints, mousePos, toScreen, bgImg, cutMarkerPattern, tool, selectionBBox]);
+  }, [doc, view, size, selectedIds, selectedId, showStitchPreview, drawingPoints, mousePos, toScreen, bgImg, cutMarkerPattern, tool, selectionBBox, hoveredEndpoint]);
 
-  const activeDrag = dragRef.current;
   const cursor = spaceDown
     ? activeDrag?.kind === 'pan'
       ? 'grabbing'
@@ -704,7 +834,9 @@ export default function Canvas() {
       ? RESIZE_CURSORS[activeDrag.handle]
       : activeDrag?.kind === 'rotate'
         ? 'grabbing'
-        : undefined;
+        : activeDrag?.kind === 'move-endpoint' || hoveredEndpoint
+          ? 'pointer'
+          : undefined;
 
   return (
     <div className="canvas-wrap" ref={containerRef}>
@@ -738,7 +870,18 @@ export default function Canvas() {
         </label>
         <div className="zoom-controls">
           <button onClick={() => setView((v) => ({ ...v, scale: Math.max(0.6, v.scale / 1.2) }))}>−</button>
-          <span>{Math.round(view.scale * 10)}%</span>
+          <input
+            className="zoom-input"
+            type="number"
+            value={Math.round(view.scale * 10)}
+            min={6}
+            max={400}
+            onChange={(e) => {
+              const pct = parseFloat(e.target.value);
+              if (!Number.isNaN(pct)) setView((v) => ({ ...v, scale: Math.min(40, Math.max(0.6, pct / 10)) }));
+            }}
+          />
+          <span className="zoom-percent-sign">%</span>
           <button onClick={() => setView((v) => ({ ...v, scale: Math.min(40, v.scale * 1.2) }))}>+</button>
         </div>
       </div>
@@ -767,6 +910,18 @@ export default function Canvas() {
           onSetStartPoint={(vertexIndex) => {
             const pts = contextMenu.obj.points;
             const rotated = [...pts.slice(vertexIndex), ...pts.slice(0, vertexIndex)];
+            dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { points: rotated } });
+          }}
+          onSetEndPoint={(vertexIndex) => {
+            // A closed loop's start and end are linked (end is always whichever
+            // point comes right before start) -- "set as end" is just a more
+            // convenient entry point for the same rotation, anchored from the
+            // other side: rotate so this vertex lands at the *last* index instead
+            // of computing "the point after it" yourself and using Set as start.
+            const pts = contextMenu.obj.points;
+            const n = pts.length;
+            const rotateBy = (vertexIndex + 1) % n;
+            const rotated = [...pts.slice(rotateBy), ...pts.slice(0, rotateBy)];
             dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { points: rotated } });
           }}
           onReverseDirection={() => {

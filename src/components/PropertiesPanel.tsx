@@ -275,7 +275,11 @@ function TransformFields({ obj, update }: { obj: EmbObject; update: (patch: Part
         onChange={(deg) => {
           if (Math.abs(deg) < 1e-9) return;
           const center = { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 };
-          update({ points: obj.points.map((p) => ({ ...rotatePoint(p, center, deg), type: p.type })) });
+          const patch: Partial<EmbObject> = { points: obj.points.map((p) => ({ ...rotatePoint(p, center, deg), type: p.type })) };
+          // Keep a fill's row angle turning with its outline -- see the matching
+          // comment in Canvas.tsx's rotate-handle drag for why this is needed.
+          if (obj.kind === 'fill') patch.fill = { ...obj.fill, angle: obj.fill.angle + deg };
+          update(patch);
         }}
       />
     </div>
@@ -434,6 +438,14 @@ export default function PropertiesPanel() {
             max={8}
             step={0.1}
             onChange={(v) => update({ fill: { ...obj.fill, stitchLength: v } })}
+          />
+          <NumberField
+            label="Pull compensation (mm)"
+            value={obj.fill.pullCompensation}
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={(v) => update({ fill: { ...obj.fill, pullCompensation: v } })}
           />
           <TwoPassUnderlayFields
             obj={obj}

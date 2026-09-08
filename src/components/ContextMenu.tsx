@@ -21,6 +21,7 @@ export default function ContextMenu({
   onToggleVisible,
   onConvertKind,
   onSetStartPoint,
+  onSetEndPoint,
   onReverseDirection,
   onAddPoint,
   onDeletePoint,
@@ -33,6 +34,7 @@ export default function ContextMenu({
   onToggleVisible: () => void;
   onConvertKind: (kind: StitchKind) => void;
   onSetStartPoint: (vertexIndex: number) => void;
+  onSetEndPoint: (vertexIndex: number) => void;
   onReverseDirection: () => void;
   onAddPoint: (insertIndex: number, point: Point) => void;
   onDeletePoint: (vertexIndex: number) => void;
@@ -86,7 +88,10 @@ export default function ContextMenu({
       ))}
       <div className="context-menu-sep" />
       {obj.kind === 'fill' && vertexIndex !== null && (
-        <button onClick={act(() => onSetStartPoint(vertexIndex))}>Set as start point</button>
+        <>
+          <button onClick={act(() => onSetStartPoint(vertexIndex))}>Set as start point</button>
+          <button onClick={act(() => onSetEndPoint(vertexIndex))}>Set as end point</button>
+        </>
       )}
       {obj.kind !== 'fill' && <button onClick={act(onReverseDirection)}>Reverse direction</button>}
       {insertIndex !== null && insertPoint && (
