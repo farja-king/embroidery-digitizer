@@ -666,6 +666,15 @@
   gap: 6px;
   margin-top: 8px;
 }
+.transform-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+  margin-bottom: 8px;
+}
+.transform-grid .field {
+  margin-bottom: 0;
+}
 .align-buttons button {
   border: 1px solid var(--border);
   background: #fff;

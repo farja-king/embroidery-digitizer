@@ -2,13 +2,56 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, defaultObject, makeId } from '../state/store';
 import type { EmbObject, PathPoint, Point } from '../types';
 import { buildPattern, generateObjectStitches, type StitchPoint } from '../stitching/engine';
-import { distanceToPolyline, distanceToSegment, flattenPath, pointInPolygon } from '../stitching/geometry';
+import { distanceToPolyline, distanceToSegment, flattenPath, pointInPolygon, rotatePoint } from '../stitching/geometry';
 import { pointsForKindChange } from '../stitching/kindConvert';
 import BackgroundControls from './BackgroundControls';
 import ContextMenu, { type ContextMenuState } from './ContextMenu';
 
 const VERTEX_HIT_PX = 9;
 const OBJECT_HIT_PX = 8;
+// The resize/rotate handle frame sits this many screen px outside the selection's
+// true content bounding box — never coincides with an on-path vertex (which is
+// always on or inside that box), so a click always unambiguously means "transform
+// the whole shape" vs. "move this one point".
+const HANDLE_OUTSET_PX = 12;
+const HANDLE_HIT_PX = 12;
+const ROTATE_OFFSET_PX = 22;
+
+type HandleDir = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+const HANDLE_DIRS: HandleDir[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+const RESIZE_CURSORS: Record<HandleDir, string> = {
+  nw: 'nwse-resize',
+  n: 'ns-resize',
+  ne: 'nesw-resize',
+  e: 'ew-resize',
+  se: 'nwse-resize',
+  s: 'ns-resize',
+  sw: 'nesw-resize',
+  w: 'ew-resize',
+};
+
+interface ScreenBox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+function handleScreenPositions(box: ScreenBox): Record<HandleDir, Point> {
+  const { x0, y0, x1, y1 } = box;
+  const mx = (x0 + x1) / 2;
+  const my = (y0 + y1) / 2;
+  return {
+    nw: { x: x0, y: y0 },
+    n: { x: mx, y: y0 },
+    ne: { x: x1, y: y0 },
+    e: { x: x1, y: my },
+    se: { x: x1, y: y1 },
+    s: { x: mx, y: y1 },
+    sw: { x: x0, y: y1 },
+    w: { x: x0, y: my },
+  };
+}
 
 interface View {
   scale: number; // px per mm
@@ -42,6 +85,8 @@ export default function Canvas() {
     | { kind: 'move-vertex'; id: string; index: number }
     | { kind: 'rect'; corner: Point; ellipse: boolean }
     | { kind: 'marquee'; corner: Point }
+    | { kind: 'resize'; handle: HandleDir; anchor: Point; startCorner: Point; originals: Map<string, PathPoint[]> }
+    | { kind: 'rotate'; center: Point; startAngle: number; originals: Map<string, PathPoint[]> }
     | null
   >(null);
 
@@ -83,6 +128,25 @@ export default function Canvas() {
     () => (showCutMarkers ? buildPattern(doc.objects, doc.trimThresholdMm) : null),
     [showCutMarkers, doc.objects, doc.trimThresholdMm],
   );
+
+  // Design-space union bounding box of the current selection, for the resize/rotate
+  // handle frame. flattenPath (not the raw sparse points) so a curve that bulges
+  // past its control points still gets a box that actually contains it.
+  const selectionBBox = useMemo(() => {
+    const selected = doc.objects.filter((o) => selectedIds.includes(o.id));
+    if (selected.length === 0) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const o of selected) {
+      for (const p of flattenPath(o.points, o.kind === 'fill')) {
+        minX = Math.min(minX, p.x);
+        minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x);
+        maxY = Math.max(maxY, p.y);
+      }
+    }
+    if (minX === Infinity) return null;
+    return { minX, minY, maxX, maxY };
+  }, [doc.objects, selectedIds]);
 
   const toDesign = useCallback(
     (px: number, py: number): Point => ({
@@ -231,6 +295,39 @@ export default function Canvas() {
     }
 
     if (tool === 'select') {
+      // Resize/rotate handles take priority over everything else — they sit a fixed
+      // number of screen px outside the selection's true content box (see
+      // HANDLE_OUTSET_PX), so this can never collide with a vertex or object hit.
+      if (selectionBBox && !doc.objects.filter((o) => selectedIds.includes(o.id)).some((o) => o.locked)) {
+        const box: ScreenBox = {
+          x0: toScreen({ x: selectionBBox.minX, y: selectionBBox.minY }).x - HANDLE_OUTSET_PX,
+          y0: toScreen({ x: selectionBBox.minX, y: selectionBBox.minY }).y - HANDLE_OUTSET_PX,
+          x1: toScreen({ x: selectionBBox.maxX, y: selectionBBox.maxY }).x + HANDLE_OUTSET_PX,
+          y1: toScreen({ x: selectionBBox.maxX, y: selectionBBox.maxY }).y + HANDLE_OUTSET_PX,
+        };
+        const positions = handleScreenPositions(box);
+        const rotateHandle = { x: (box.x0 + box.x1) / 2, y: box.y0 - ROTATE_OFFSET_PX };
+        const originals = new Map(doc.objects.filter((o) => selectedIds.includes(o.id)).map((o) => [o.id, o.points.map((pt) => ({ ...pt }))]));
+
+        if (Math.hypot(px - rotateHandle.x, py - rotateHandle.y) < HANDLE_HIT_PX) {
+          const center = { x: (selectionBBox.minX + selectionBBox.maxX) / 2, y: (selectionBBox.minY + selectionBBox.maxY) / 2 };
+          dragRef.current = { kind: 'rotate', center, startAngle: Math.atan2(p.y - center.y, p.x - center.x), originals };
+          return;
+        }
+        for (const dir of HANDLE_DIRS) {
+          const hp = positions[dir];
+          if (Math.hypot(px - hp.x, py - hp.y) < HANDLE_HIT_PX) {
+            const anchorDir: HandleDir = { nw: 'se', n: 's', ne: 'sw', e: 'w', se: 'nw', s: 'n', sw: 'ne', w: 'e' }[dir] as HandleDir;
+            const cornerOf = (d: HandleDir): Point => ({
+              x: d.includes('w') ? selectionBBox.minX : d.includes('e') ? selectionBBox.maxX : (selectionBBox.minX + selectionBBox.maxX) / 2,
+              y: d.includes('n') ? selectionBBox.minY : d.includes('s') ? selectionBBox.maxY : (selectionBBox.minY + selectionBBox.maxY) / 2,
+            });
+            dragRef.current = { kind: 'resize', handle: dir, anchor: cornerOf(anchorDir), startCorner: cornerOf(dir), originals };
+            return;
+          }
+        }
+      }
+
       const selected = doc.objects.find((o) => o.id === selectedId);
       if (selected && !selected.locked) {
         const vi = getVertexAt(p, selected);
@@ -306,6 +403,42 @@ export default function Canvas() {
           type: 'UPDATE_OBJECT',
           id,
           patch: { points: original.map((pt) => ({ x: pt.x + dx, y: pt.y + dy, type: pt.type })) },
+        });
+      }
+    } else if (drag.kind === 'resize') {
+      const { anchor, startCorner, handle } = drag;
+      // A degenerate axis (e.g. dragging the S handle on a perfectly horizontal
+      // line, whose original height is 0) has no ratio to preserve — leave that
+      // axis alone rather than divide by ~0.
+      const scaleFor = (curr: number, start: number, anch: number) => {
+        const span = start - anch;
+        if (Math.abs(span) < 1e-6) return 1;
+        return Math.max(0.05, (curr - anch) / span);
+      };
+      const scaleX = handle === 'n' || handle === 's' ? 1 : scaleFor(p.x, startCorner.x, anchor.x);
+      const scaleY = handle === 'e' || handle === 'w' ? 1 : scaleFor(p.y, startCorner.y, anchor.y);
+      for (const [id, original] of drag.originals) {
+        dispatch({
+          type: 'UPDATE_OBJECT',
+          id,
+          patch: {
+            points: original.map((pt) => ({
+              x: anchor.x + (pt.x - anchor.x) * scaleX,
+              y: anchor.y + (pt.y - anchor.y) * scaleY,
+              type: pt.type,
+            })),
+          },
+        });
+      }
+    } else if (drag.kind === 'rotate') {
+      const angle = Math.atan2(p.y - drag.center.y, p.x - drag.center.x);
+      let deltaDeg = ((angle - drag.startAngle) * 180) / Math.PI;
+      if (e.shiftKey) deltaDeg = Math.round(deltaDeg / 15) * 15;
+      for (const [id, original] of drag.originals) {
+        dispatch({
+          type: 'UPDATE_OBJECT',
+          id,
+          patch: { points: original.map((pt) => ({ ...rotatePoint(pt, drag.center, deltaDeg), type: pt.type })) },
         });
       }
     }
@@ -467,6 +600,49 @@ export default function Canvas() {
       drawObject(ctx, obj, toScreen, view.scale, selectedIds.includes(obj.id), showStitchPreview);
     }
 
+    // Resize/rotate handle frame around the current selection — not while actively
+    // drawing a new shape, and not for a locked object (nothing to transform).
+    if (
+      tool === 'select' &&
+      selectionBBox &&
+      !drawingPoints &&
+      !doc.objects.filter((o) => selectedIds.includes(o.id)).some((o) => o.locked)
+    ) {
+      const box: ScreenBox = {
+        x0: toScreen({ x: selectionBBox.minX, y: selectionBBox.minY }).x - HANDLE_OUTSET_PX,
+        y0: toScreen({ x: selectionBBox.minX, y: selectionBBox.minY }).y - HANDLE_OUTSET_PX,
+        x1: toScreen({ x: selectionBBox.maxX, y: selectionBBox.maxY }).x + HANDLE_OUTSET_PX,
+        y1: toScreen({ x: selectionBBox.maxX, y: selectionBBox.maxY }).y + HANDLE_OUTSET_PX,
+      };
+      ctx.strokeStyle = '#2f6fed';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.strokeRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+      ctx.setLineDash([]);
+
+      const positions = handleScreenPositions(box);
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#2f6fed';
+      ctx.lineWidth = 1.5;
+      for (const dir of HANDLE_DIRS) {
+        const hp = positions[dir];
+        ctx.fillRect(hp.x - 4, hp.y - 4, 8, 8);
+        ctx.strokeRect(hp.x - 4, hp.y - 4, 8, 8);
+      }
+
+      const mx = (box.x0 + box.x1) / 2;
+      const rotateY = box.y0 - ROTATE_OFFSET_PX;
+      ctx.beginPath();
+      ctx.moveTo(mx, box.y0);
+      ctx.lineTo(mx, rotateY);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(mx, rotateY, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.stroke();
+    }
+
     if (cutMarkerPattern) drawCutMarkers(ctx, cutMarkerPattern.stitches, toScreen);
 
     // marquee-select rectangle, live while dragging
@@ -507,9 +683,18 @@ export default function Canvas() {
       ctx.setLineDash([]);
       for (const p of drawingPoints) drawVertexMarker(ctx, toScreen(p), p.type, '#2f6fed', '#2f6fed');
     }
-  }, [doc, view, size, selectedIds, showStitchPreview, drawingPoints, mousePos, toScreen, bgImg, cutMarkerPattern]);
+  }, [doc, view, size, selectedIds, showStitchPreview, drawingPoints, mousePos, toScreen, bgImg, cutMarkerPattern, tool, selectionBBox]);
 
-  const cursor = spaceDown ? (dragRef.current?.kind === 'pan' ? 'grabbing' : 'grab') : undefined;
+  const activeDrag = dragRef.current;
+  const cursor = spaceDown
+    ? activeDrag?.kind === 'pan'
+      ? 'grabbing'
+      : 'grab'
+    : activeDrag?.kind === 'resize'
+      ? RESIZE_CURSORS[activeDrag.handle]
+      : activeDrag?.kind === 'rotate'
+        ? 'grabbing'
+        : undefined;
 
   return (
     <div className="canvas-wrap" ref={containerRef}>
@@ -702,8 +887,9 @@ function drawObject(
   if (stitchPreview) {
     const stitches = generateObjectStitches(obj);
     if (stitches.length > 1) {
+      const lineW = Math.max(1, scale * 0.28);
       ctx.strokeStyle = color;
-      ctx.lineWidth = Math.max(1, scale * 0.28);
+      ctx.lineWidth = lineW;
       ctx.beginPath();
       const first = toScreen(stitches[0]);
       ctx.moveTo(first.x, first.y);
@@ -712,6 +898,27 @@ function drawObject(
         ctx.lineTo(s.x, s.y);
       }
       ctx.stroke();
+      // Individual needle-penetration dots — without these, stitches along a
+      // straight tatami row are invisible as a stroked line (collinear points
+      // look identical whether staggered row-to-row or not), which hid the fill
+      // stagger entirely. Sized to always poke out past the stroke's own width
+      // (which grows with zoom just like these do) rather than a fixed radius,
+      // or a thick zoomed-in line completely swallows them. Only drawn zoomed-in
+      // enough to read as dots rather than a blur, both for legibility and
+      // because a dense fill can be thousands of stitches.
+      if (scale >= 6) {
+        const r = lineW / 2 + 1.4;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.lineWidth = 1;
+        for (const sp of stitches) {
+          const s = toScreen(sp);
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
     }
   } else if (obj.kind === 'fill') {
     const flat = flattenPath(obj.points, true);
