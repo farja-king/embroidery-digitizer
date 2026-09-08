@@ -79,6 +79,28 @@ function fillStitches(
   // (actually inset from it), so it can never poke out past this expanded edge.
   const expanded = offsetPolygon(polygon, Math.max(0, pullCompensation));
   const rows = tatamiRows(expanded, angle, rowSpacing, stitchLength);
+  // A boustrophedon scan's two natural ends are always at opposite Y-extremes of
+  // the shape (relative to the fill angle) -- reversing the whole point sequence
+  // is still a valid scan (each row's own internal direction flips too, so the
+  // zigzag stays consistent), just walked from the other end. Picking whichever
+  // direction lands its *natural finish* closer to the desired end point (or
+  // start, if no end is set) is the real fix for a long "funky line" bridge back
+  // across the fill -- professional digitizing software doesn't achieve exact
+  // start=end by bridging either, it achieves it by choosing scan direction so
+  // the fill *naturally* finishes back near the entry, with the underlay (already
+  // handled by the entry bridge below) doing the one-way "delivery" to the far
+  // side first.
+  if (rows.length > 1 && (startPoint || endPoint)) {
+    // Prioritize the end point when both are set: that's what determines whether
+    // the *next* same-color shape can flow on without a trim, which is the whole
+    // reason this exists. Only the entry side is otherwise unconstrained.
+    const optimizingForEnd = !!endPoint;
+    const target = (endPoint ?? startPoint)!;
+    const distFirst = Math.hypot(rows[0].x - target.x, rows[0].y - target.y);
+    const distLast = Math.hypot(rows[rows.length - 1].x - target.x, rows[rows.length - 1].y - target.y);
+    const shouldReverse = optimizingForEnd ? distFirst < distLast : distLast < distFirst;
+    if (shouldReverse) rows.reverse();
+  }
   for (const p of rows) out.push({ x: p.x, y: p.y, command: 'STITCH' });
   // The scan naturally finishes wherever the last row happens to end -- if the user
   // dragged the end marker somewhere else (to line up with the next same-color
@@ -212,15 +234,18 @@ export function buildPattern(objects: EmbObject[], trimThresholdMm = 3): BuiltPa
     const first = objStitches[0];
     const jumpDist = Math.hypot(first.x - cursor.x, first.y - cursor.y);
     if (jumpDist > 0.3) {
-      // JUMP does the moving; TRIM (if warranted) is a zero-delta "cut here" marker
-      // placed once we've already arrived, which is the convention every format below expects.
+      // A real machine ties off and cuts the thread at wherever it just finished
+      // stitching, *then* travels to the next start — not the other way around.
+      // TRIM is therefore a zero-delta "cut here" marker at the *departure* point
+      // (cursor, before any movement), and only after that does the JUMP travel to
+      // the new position — every format writer below just encodes each command at
+      // wherever it sits in this sequence, so this order is what actually ends up
+      // in the exported file, not just how the canvas preview draws the scissor.
+      // Never trim before the very first stitch of the whole design: nothing has
+      // been sewn yet, so there's no trailing thread to cut, just a positioning jump.
+      if (started && jumpDist >= trimThresholdMm) stitches.push({ x: cursor.x, y: cursor.y, command: 'TRIM' });
       const hops = splitLongJump(cursor, first);
       for (const hop of hops) stitches.push({ x: hop.x, y: hop.y, command: 'JUMP' });
-      // Never trim before the very first stitch of the whole design: nothing has
-      // been sewn yet, so there's no trailing thread to cut -- just a positioning
-      // jump. Showed up as a scissor icon sitting right on top of the design's own
-      // start marker, which read as "it's cutting before it even begins."
-      if (started && jumpDist >= trimThresholdMm) stitches.push({ x: first.x, y: first.y, command: 'TRIM' });
     }
 
     for (const sp of objStitches) stitches.push(sp);
@@ -255,6 +280,24 @@ function tieStitchesAt(anchor: Point, toward: Point): StitchPoint[] {
  * tie-off stitches right before every point a thread run ends at (the last stitch,
  * or the last stitch before a COLOR_CHANGE/TRIM/END) — mirrors Hatch's default
  * lock-stitch behavior at every thread start/end. */
+// A long jump splits into several JUMP hops (see splitLongJump), and TRIM now
+// sits *before* those hops (see buildPattern) rather than always immediately
+// adjacent to the stitch on either side — so "was there a trim/color-change
+// here" has to look past any number of JUMPs in between, not just the one
+// immediately-adjacent command.
+function prevMeaningfulCommand(stitches: StitchPoint[], i: number): Command | null {
+  for (let j = i - 1; j >= 0; j--) {
+    if (stitches[j].command !== 'JUMP') return stitches[j].command;
+  }
+  return null;
+}
+function nextMeaningfulCommand(stitches: StitchPoint[], i: number): Command {
+  for (let j = i + 1; j < stitches.length; j++) {
+    if (stitches[j].command !== 'JUMP') return stitches[j].command;
+  }
+  return 'END';
+}
+
 function addTieStitches(stitches: StitchPoint[]): StitchPoint[] {
   const out: StitchPoint[] = [];
   for (let i = 0; i < stitches.length; i++) {
@@ -263,14 +306,14 @@ function addTieStitches(stitches: StitchPoint[]): StitchPoint[] {
       out.push(s);
       continue;
     }
-    const prevCmd = i > 0 ? stitches[i - 1].command : null;
+    const prevCmd = prevMeaningfulCommand(stitches, i);
     const isRunStart = prevCmd === null || prevCmd === 'COLOR_CHANGE' || prevCmd === 'TRIM';
     if (isRunStart) {
       const next = stitches.slice(i + 1).find((x) => x.command === 'STITCH') ?? s;
       out.push(...tieStitchesAt(s, next));
     }
     out.push(s);
-    const nextCmd = i < stitches.length - 1 ? stitches[i + 1].command : 'END';
+    const nextCmd = nextMeaningfulCommand(stitches, i);
     const isRunEnd = nextCmd === 'COLOR_CHANGE' || nextCmd === 'TRIM' || nextCmd === 'END';
     if (isRunEnd) {
       let prevStitch: StitchPoint = s;
