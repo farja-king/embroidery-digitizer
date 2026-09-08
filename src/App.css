@@ -295,6 +295,19 @@
 .text-modal {
   width: 360px;
   max-width: 92vw;
+  box-sizing: border-box;
+}
+.text-modal .field input,
+.text-modal .field select {
+  width: 100%;
+  box-sizing: border-box;
+}
+.text-modal .field.row > label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0; /* flex items don't shrink below their content's intrinsic width by default -- without this the number input overflows the modal instead of fitting the column it was given */
 }
 .secondary-btn {
   margin-top: 0;

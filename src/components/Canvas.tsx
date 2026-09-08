@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useStore, defaultObject, makeId } from '../state/store';
-import type { EmbObject, PathPoint, Point } from '../types';
+import { useStore, defaultObject, makeId, transformFillAnchors } from '../state/store';
+import type { EmbObject, FillParams, PathPoint, Point } from '../types';
 import { buildPattern, generateObjectStitches, type StitchPoint } from '../stitching/engine';
 import { distanceToPolyline, distanceToSegment, flattenPath, pointInPolygon, rotatePoint } from '../stitching/geometry';
 import { pointsForKindChange } from '../stitching/kindConvert';
@@ -80,14 +80,28 @@ export default function Canvas() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const dragRef = useRef<
     | { kind: 'pan'; startPx: Point; startPan: Point }
-    | { kind: 'move-object'; id: string; startMm: Point; original: PathPoint[] }
-    | { kind: 'move-multi'; ids: string[]; startMm: Point; originals: Map<string, PathPoint[]> }
+    | { kind: 'move-object'; id: string; startMm: Point; original: PathPoint[]; originalFill: FillParams | null }
+    | { kind: 'move-multi'; ids: string[]; startMm: Point; originals: Map<string, PathPoint[]>; originalFills: Map<string, FillParams | null> }
     | { kind: 'move-vertex'; id: string; index: number }
     | { kind: 'move-endpoint'; id: string; which: 'start' | 'end' }
     | { kind: 'rect'; corner: Point; ellipse: boolean }
     | { kind: 'marquee'; corner: Point }
-    | { kind: 'resize'; handle: HandleDir; anchor: Point; startCorner: Point; originals: Map<string, PathPoint[]> }
-    | { kind: 'rotate'; center: Point; startAngle: number; originals: Map<string, PathPoint[]>; originalFillAngles: Map<string, number> }
+    | {
+        kind: 'resize';
+        handle: HandleDir;
+        anchor: Point;
+        startCorner: Point;
+        originals: Map<string, PathPoint[]>;
+        originalFills: Map<string, FillParams | null>;
+      }
+    | {
+        kind: 'rotate';
+        center: Point;
+        startAngle: number;
+        originals: Map<string, PathPoint[]>;
+        originalFillAngles: Map<string, number>;
+        originalFills: Map<string, FillParams | null>;
+      }
     | null
   >(null);
 
@@ -376,6 +390,8 @@ export default function Canvas() {
         const positions = handleScreenPositions(box);
         const rotateHandle = { x: (box.x0 + box.x1) / 2, y: box.y0 - ROTATE_OFFSET_PX };
         const originals = new Map(doc.objects.filter((o) => selectedIds.includes(o.id)).map((o) => [o.id, o.points.map((pt) => ({ ...pt }))]));
+        const originalFillsFor = (ids: string[]) =>
+          new Map(doc.objects.filter((o) => ids.includes(o.id)).map((o) => [o.id, o.kind === 'fill' ? o.fill : null]));
 
         if (Math.hypot(px - rotateHandle.x, py - rotateHandle.y) < HANDLE_HIT_PX) {
           const center = { x: (selectionBBox.minX + selectionBBox.maxX) / 2, y: (selectionBBox.minY + selectionBBox.maxY) / 2 };
@@ -388,6 +404,7 @@ export default function Canvas() {
             startAngle: Math.atan2(p.y - center.y, p.x - center.x),
             originals,
             originalFillAngles,
+            originalFills: originalFillsFor(selectedIds),
           };
           return;
         }
@@ -399,7 +416,14 @@ export default function Canvas() {
               x: d.includes('w') ? selectionBBox.minX : d.includes('e') ? selectionBBox.maxX : (selectionBBox.minX + selectionBBox.maxX) / 2,
               y: d.includes('n') ? selectionBBox.minY : d.includes('s') ? selectionBBox.maxY : (selectionBBox.minY + selectionBBox.maxY) / 2,
             });
-            dragRef.current = { kind: 'resize', handle: dir, anchor: cornerOf(anchorDir), startCorner: cornerOf(dir), originals };
+            dragRef.current = {
+              kind: 'resize',
+              handle: dir,
+              anchor: cornerOf(anchorDir),
+              startCorner: cornerOf(dir),
+              originals,
+              originalFills: originalFillsFor(selectedIds),
+            };
             return;
           }
         }
@@ -427,11 +451,19 @@ export default function Canvas() {
         if (selectedIds.length > 1 && selectedIds.includes(hit.id)) {
           // dragging one of an existing multi-selection moves the whole group
           const originals = new Map(doc.objects.filter((o) => selectedIds.includes(o.id)).map((o) => [o.id, o.points.map((pt) => ({ ...pt }))]));
-          dragRef.current = { kind: 'move-multi', ids: selectedIds, startMm: p, originals };
+          const originalFills = new Map(doc.objects.filter((o) => selectedIds.includes(o.id)).map((o) => [o.id, o.kind === 'fill' ? o.fill : null]));
+          dragRef.current = { kind: 'move-multi', ids: selectedIds, startMm: p, originals, originalFills };
           return;
         }
         setSelectedId(hit.id);
-        if (!hit.locked) dragRef.current = { kind: 'move-object', id: hit.id, startMm: p, original: hit.points.map((pt) => ({ ...pt })) };
+        if (!hit.locked)
+          dragRef.current = {
+            kind: 'move-object',
+            id: hit.id,
+            startMm: p,
+            original: hit.points.map((pt) => ({ ...pt })),
+            originalFill: hit.kind === 'fill' ? hit.fill : null,
+          };
         return;
       }
       setSelectedIds([]);
@@ -465,11 +497,10 @@ export default function Canvas() {
     } else if (drag.kind === 'move-object') {
       const dx = p.x - drag.startMm.x;
       const dy = p.y - drag.startMm.y;
-      dispatch({
-        type: 'UPDATE_OBJECT',
-        id: drag.id,
-        patch: { points: drag.original.map((pt) => ({ x: pt.x + dx, y: pt.y + dy, type: pt.type })) },
-      });
+      const translate = (pt: Point) => ({ x: pt.x + dx, y: pt.y + dy });
+      const patch: Partial<EmbObject> = { points: drag.original.map((pt) => ({ ...translate(pt), type: pt.type })) };
+      if (drag.originalFill) patch.fill = transformFillAnchors(drag.originalFill, translate);
+      dispatch({ type: 'UPDATE_OBJECT', id: drag.id, patch });
     } else if (drag.kind === 'move-vertex') {
       const obj = doc.objects.find((o) => o.id === drag.id);
       if (obj) {
@@ -510,14 +541,14 @@ export default function Canvas() {
     } else if (drag.kind === 'move-multi') {
       const dx = p.x - drag.startMm.x;
       const dy = p.y - drag.startMm.y;
+      const translate = (pt: Point) => ({ x: pt.x + dx, y: pt.y + dy });
       for (const id of drag.ids) {
         const original = drag.originals.get(id);
         if (!original) continue;
-        dispatch({
-          type: 'UPDATE_OBJECT',
-          id,
-          patch: { points: original.map((pt) => ({ x: pt.x + dx, y: pt.y + dy, type: pt.type })) },
-        });
+        const patch: Partial<EmbObject> = { points: original.map((pt) => ({ ...translate(pt), type: pt.type })) };
+        const originalFill = drag.originalFills.get(id);
+        if (originalFill) patch.fill = transformFillAnchors(originalFill, translate);
+        dispatch({ type: 'UPDATE_OBJECT', id, patch });
       }
     } else if (drag.kind === 'resize') {
       const { anchor, startCorner, handle } = drag;
@@ -531,23 +562,18 @@ export default function Canvas() {
       };
       const scaleX = handle === 'n' || handle === 's' ? 1 : scaleFor(p.x, startCorner.x, anchor.x);
       const scaleY = handle === 'e' || handle === 'w' ? 1 : scaleFor(p.y, startCorner.y, anchor.y);
+      const scalePt = (pt: Point) => ({ x: anchor.x + (pt.x - anchor.x) * scaleX, y: anchor.y + (pt.y - anchor.y) * scaleY });
       for (const [id, original] of drag.originals) {
-        dispatch({
-          type: 'UPDATE_OBJECT',
-          id,
-          patch: {
-            points: original.map((pt) => ({
-              x: anchor.x + (pt.x - anchor.x) * scaleX,
-              y: anchor.y + (pt.y - anchor.y) * scaleY,
-              type: pt.type,
-            })),
-          },
-        });
+        const patch: Partial<EmbObject> = { points: original.map((pt) => ({ ...scalePt(pt), type: pt.type })) };
+        const originalFill = drag.originalFills.get(id);
+        if (originalFill) patch.fill = transformFillAnchors(originalFill, scalePt);
+        dispatch({ type: 'UPDATE_OBJECT', id, patch });
       }
     } else if (drag.kind === 'rotate') {
       const angle = Math.atan2(p.y - drag.center.y, p.x - drag.center.x);
       let deltaDeg = ((angle - drag.startAngle) * 180) / Math.PI;
       if (e.shiftKey) deltaDeg = Math.round(deltaDeg / 15) * 15;
+      const rotatePt = (pt: Point) => rotatePoint(pt, drag.center, deltaDeg);
       for (const [id, original] of drag.originals) {
         const obj = doc.objects.find((o) => o.id === id);
         // A fill's row angle is independent of its outline points, so rotating
@@ -555,12 +581,15 @@ export default function Canvas() {
         // old direction relative to the now-turned edges -- rows land diagonally
         // across a rotated square instead of parallel to its sides, producing a
         // ragged, not-flush edge instead of the ends lining up on the boundary.
+        // Its start/end/guide anchors need the same rotation for the same reason
+        // start/end markers are absolute coordinates, not tied to point order.
         const originalFillAngle = drag.originalFillAngles.get(id);
+        const originalFill = drag.originalFills.get(id);
         const patch: Partial<EmbObject> = {
-          points: original.map((pt) => ({ ...rotatePoint(pt, drag.center, deltaDeg), type: pt.type })),
+          points: original.map((pt) => ({ ...rotatePt(pt), type: pt.type })),
         };
-        if (obj && obj.kind === 'fill' && originalFillAngle !== undefined) {
-          patch.fill = { ...obj.fill, angle: originalFillAngle + deltaDeg };
+        if (obj && obj.kind === 'fill' && originalFillAngle !== undefined && originalFill) {
+          patch.fill = { ...transformFillAnchors(originalFill, rotatePt), angle: originalFillAngle + deltaDeg };
         }
         dispatch({ type: 'UPDATE_OBJECT', id, patch });
       }

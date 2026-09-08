@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useStore, type AlignMode } from '../state/store';
+import { useStore, transformFillAnchors, type AlignMode } from '../state/store';
 import type { EmbObject, RGB, StitchKind, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
 import { autoUnderlayType, normalizeUnderlay } from '../stitching/underlay';
 import { pointsForKindChange } from '../stitching/kindConvert';
@@ -212,11 +212,19 @@ function TransformFields({ obj, update }: { obj: EmbObject; update: (patch: Part
   const box = boundsOf(obj);
   const [lockAspect, setLockAspect] = useState(false);
 
-  const applyScale = (scaleX: number, scaleY: number) => {
-    update({ points: obj.points.map((p) => ({ ...p, x: box.minX + (p.x - box.minX) * scaleX, y: box.minY + (p.y - box.minY) * scaleY })) });
-  };
+  // Start/end/guide anchors are absolute coordinates too, same as the outline
+  // points -- without transforming them the same way, they're left behind at
+  // their old spot every time the shape is moved or resized from these fields
+  // (they stay visually "on" the object only by making the bridge always
+  // project onto the nearest current boundary point, which is not the same
+  // thing as staying where the user actually put them).
   const applyTransform = (fn: (p: { x: number; y: number }) => { x: number; y: number }) => {
-    update({ points: obj.points.map((p) => ({ ...p, ...fn(p) })) });
+    const patch: Partial<EmbObject> = { points: obj.points.map((p) => ({ ...p, ...fn(p) })) };
+    if (obj.kind === 'fill') patch.fill = transformFillAnchors(obj.fill, fn);
+    update(patch);
+  };
+  const applyScale = (scaleX: number, scaleY: number) => {
+    applyTransform((p) => ({ x: box.minX + (p.x - box.minX) * scaleX, y: box.minY + (p.y - box.minY) * scaleY }));
   };
 
   return (
@@ -283,10 +291,12 @@ function TransformFields({ obj, update }: { obj: EmbObject; update: (patch: Part
         onChange={(deg) => {
           if (Math.abs(deg) < 1e-9) return;
           const center = { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 };
-          const patch: Partial<EmbObject> = { points: obj.points.map((p) => ({ ...rotatePoint(p, center, deg), type: p.type })) };
-          // Keep a fill's row angle turning with its outline -- see the matching
-          // comment in Canvas.tsx's rotate-handle drag for why this is needed.
-          if (obj.kind === 'fill') patch.fill = { ...obj.fill, angle: obj.fill.angle + deg };
+          const rotatePt = (p: { x: number; y: number }) => rotatePoint(p, center, deg);
+          const patch: Partial<EmbObject> = { points: obj.points.map((p) => ({ ...rotatePt(p), type: p.type })) };
+          // Keep a fill's row angle turning with its outline, and its start/end/
+          // guide anchors moving with it too -- see the matching comment in
+          // Canvas.tsx's rotate-handle drag for why both are needed.
+          if (obj.kind === 'fill') patch.fill = { ...transformFillAnchors(obj.fill, rotatePt), angle: obj.fill.angle + deg };
           update(patch);
         }}
       />

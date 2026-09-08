@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { BackgroundImage, Document, EmbObject, HoopSize, PathPoint, RGB, StitchKind, ToolId } from '../types';
+import type { BackgroundImage, Document, EmbObject, FillParams, HoopSize, PathPoint, Point, RGB, StitchKind, ToolId } from '../types';
 import { HOOP_PRESETS, defaultTwoPassUnderlay } from '../types';
 import { flattenPath } from '../stitching/geometry';
 
@@ -7,6 +7,25 @@ export type AlignMode = 'left' | 'right' | 'centerH' | 'top' | 'bottom' | 'cente
 
 export function makeId(): string {
   return Math.random().toString(36).slice(2, 10);
+}
+
+/** Applies a point transform (translate/scale/rotate) to a fill's own anchor
+ * points -- startPoint, endPoint, guideLine -- alongside the object's outline
+ * `points`. These live in the same absolute design-space coordinates as the
+ * outline, so whenever the outline moves, resizes, or rotates, these need the
+ * *same* transform or they're left behind: still pointing at the old spot,
+ * now floating off the shape (or worse, silently landing somewhere on the
+ * *new* boundary that has nothing to do with where the user actually put
+ * them, since a bridge always projects onto the nearest boundary point
+ * regardless of how far off that point has drifted). Every place in this app
+ * that transforms an object's points needs to call this too. */
+export function transformFillAnchors(fill: FillParams, fn: (p: Point) => Point): FillParams {
+  return {
+    ...fill,
+    startPoint: fill.startPoint ? fn(fill.startPoint) : null,
+    endPoint: fill.endPoint ? fn(fill.endPoint) : null,
+    guideLine: fill.guideLine ? fill.guideLine.map((p) => ({ ...fn(p), type: p.type })) : null,
+  };
 }
 
 export function defaultObject(kind: StitchKind, points: PathPoint[], color: RGB): EmbObject {
@@ -179,11 +198,13 @@ function reducer(state: Document, action: Action): Document {
       if (index === -1) return state;
       const original = state.objects[index];
       const offset = 5; // mm, so the copy doesn't sit invisibly on top of the original
+      const shift = (p: Point) => ({ x: p.x + offset, y: p.y + offset });
       const copy: EmbObject = {
         ...original,
         id: action.newId,
         name: `${original.name} copy`,
-        points: original.points.map((p) => ({ ...p, x: p.x + offset, y: p.y + offset })),
+        points: original.points.map((p) => ({ ...p, ...shift(p) })),
+        fill: original.kind === 'fill' ? transformFillAnchors(original.fill, shift) : original.fill,
       };
       const objects = state.objects.slice();
       objects.splice(index + 1, 0, copy);
@@ -224,7 +245,12 @@ function reducer(state: Document, action: Action): Document {
             case 'centerV': dy = (minY + maxY) / 2 - (b.minY + b.maxY) / 2; break;
           }
           if (dx === 0 && dy === 0) return o;
-          return { ...o, points: o.points.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy })) };
+          const shift = (p: Point) => ({ x: p.x + dx, y: p.y + dy });
+          return {
+            ...o,
+            points: o.points.map((p) => ({ ...p, ...shift(p) })),
+            fill: o.kind === 'fill' ? transformFillAnchors(o.fill, shift) : o.fill,
+          };
         }),
       };
     }
