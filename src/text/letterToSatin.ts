@@ -193,7 +193,7 @@ export function ribbonToSatin(contour: Point[]): SatinCenterline | null {
     // other branch, or a corner the cut sliced past), which this catches
     // even when the local width profile alone looked clean.
     const ribbonArea = result.width * pathLength(result.centerline);
-    if (Math.abs(ribbonArea - trueArea) > trueArea * 0.35) continue;
+    if (Math.abs(ribbonArea - trueArea) > trueArea * 0.2) continue;
     if (!best || result.score < best.score) best = result;
   }
   return best;
