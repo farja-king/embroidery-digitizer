@@ -309,14 +309,20 @@ export function scanlineSpans(polygon: Point[], rowY: number): number[] {
 
 /** Boustrophedon (snake-pattern) scan-line tatami fill of a polygon at a given angle —
  * the shared row-generation core used both for a fill object's top stitching and for
- * a tatami underlay pass underneath it (at a different angle/spacing). */
-export function tatamiRows(polygon: Point[], angle: number, rowSpacing: number, stitchLength: number): Point[] {
+ * a tatami underlay pass underneath it (at a different angle/spacing). `yRange`
+ * (in the same rotated local-Y space the scan itself works in, from `localY`)
+ * restricts which rows get generated to a band of the shape -- used to split a
+ * fill into two independently-scanned regions that meet at a chosen row instead
+ * of always covering the whole shape in one continuous pass. */
+export function tatamiRows(polygon: Point[], angle: number, rowSpacing: number, stitchLength: number, yRange?: [number, number]): Point[] {
   if (polygon.length < 3) return [];
   const c = centroid(polygon);
   const rotated = polygon.map((p) => rotatePoint(p, c, -angle));
   const ys = rotated.map((p) => p.y);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
+  const shapeMinY = Math.min(...ys);
+  const shapeMaxY = Math.max(...ys);
+  const minY = yRange ? Math.max(shapeMinY, yRange[0]) : shapeMinY;
+  const maxY = yRange ? Math.min(shapeMaxY, yRange[1]) : shapeMaxY;
   const spacing = Math.max(0.15, rowSpacing);
   const stitchLen = Math.max(0.2, stitchLength);
 

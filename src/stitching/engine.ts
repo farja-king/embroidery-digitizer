@@ -1,6 +1,66 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { flattenPath, normalAt, offsetPolygon, perimeterBridge, resamplePath, straightBridge, tatamiRows } from './geometry';
+import { centroid, flattenPath, normalAt, offsetPolygon, perimeterBridge, resamplePath, rotatePoint, straightBridge, tatamiRows } from './geometry';
 import { autoUnderlayType, fillUnderlay, normalizeUnderlay, satinUnderlay } from './underlay';
+
+/** When both a start and end point are set, splits the fill into two independently
+ * -scanned regions meeting at the row level of the end point, instead of one
+ * continuous scan bridged across a possibly-unrelated gap. This is how real
+ * digitizing software handles an end point that isn't at either natural scan
+ * extreme: stitch from the start point up to the end point's row (the "near"
+ * region), travel around the shape's own edge to the far extreme, then stitch
+ * back down from there to the end point's row (the "far" region) -- the two
+ * regions' fill meets cleanly at the shared row instead of leaving a gap or a
+ * stray line cutting across already-stitched fill.
+ *
+ * The inter-region travel always walks the shape's own perimeter (never a
+ * straight line) because by the time it happens the near region is already
+ * fully stitched -- a straight bridge there would necessarily cut back across
+ * that finished fill, which this technique exists specifically to avoid. */
+function splitFillRows(
+  polygon: Point[],
+  angle: number,
+  rowSpacing: number,
+  stitchLength: number,
+  startPoint: Point,
+  endPoint: Point,
+  step: number,
+): Point[] {
+  const c = centroid(polygon);
+  const rotated = polygon.map((p) => rotatePoint(p, c, -angle));
+  const ys = rotated.map((p) => p.y);
+  const shapeMinY = Math.min(...ys);
+  const shapeMaxY = Math.max(...ys);
+  const splitY = Math.min(shapeMaxY, Math.max(shapeMinY, rotatePoint(endPoint, c, -angle).y));
+  const startLocalY = rotatePoint(startPoint, c, -angle).y;
+  // Whichever shape extreme the start point sits closer to is the "near" side --
+  // the region that gets stitched first, straight from the start point.
+  const nearIsMin = Math.abs(startLocalY - shapeMinY) <= Math.abs(startLocalY - shapeMaxY);
+
+  let nearRows: Point[];
+  let farRows: Point[];
+  if (nearIsMin) {
+    // Ascending row order (tatamiRows' natural direction) already runs from the
+    // shape's min extreme up to the split row -- exactly start-side-first.
+    nearRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [shapeMinY, splitY]);
+    // The far region's natural ascending order runs split-row-to-max, which
+    // starts at the split (wrong end) -- reverse so it starts at the far max
+    // extreme and finishes back at the split row, next to the end point.
+    farRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [splitY, shapeMaxY]).reverse();
+  } else {
+    nearRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [splitY, shapeMaxY]).reverse();
+    farRows = tatamiRows(polygon, angle, rowSpacing, stitchLength, [shapeMinY, splitY]);
+  }
+
+  if (nearRows.length === 0) return farRows;
+  if (farRows.length === 0) return nearRows;
+  const nearLast = nearRows[nearRows.length - 1];
+  const farFirst = farRows[0];
+  const travel =
+    Math.abs(nearLast.x - farFirst.x) > 0.05 || Math.abs(nearLast.y - farFirst.y) > 0.05
+      ? perimeterBridge(polygon, nearLast, farFirst, step)
+      : [];
+  return [...nearRows, ...travel, ...farRows];
+}
 
 /** Runs both underlay passes and concatenates their stitches, pass 1 then pass 2.
  * Pass 1's 'auto' mode uses the object's own auto heuristic; pass 2 has no such
@@ -81,28 +141,29 @@ function fillStitches(
   // on fabric — the underlay above deliberately stays on the original boundary
   // (actually inset from it), so it can never poke out past this expanded edge.
   const expanded = offsetPolygon(polygon, Math.max(0, pullCompensation));
-  const rows = tatamiRows(expanded, angle, rowSpacing, stitchLength);
-  // A boustrophedon scan's two natural ends are always at opposite Y-extremes of
-  // the shape (relative to the fill angle) -- reversing the whole point sequence
-  // is still a valid scan (each row's own internal direction flips too, so the
-  // zigzag stays consistent), just walked from the other end. Picking whichever
-  // direction lands its *natural finish* closer to the desired end point (or
-  // start, if no end is set) is the real fix for a long "funky line" bridge back
-  // across the fill -- professional digitizing software doesn't achieve exact
-  // start=end by bridging either, it achieves it by choosing scan direction so
-  // the fill *naturally* finishes back near the entry, with the underlay (already
-  // handled by the entry bridge below) doing the one-way "delivery" to the far
-  // side first.
-  if (rows.length > 1 && (startPoint || endPoint)) {
-    // Prioritize the end point when both are set: that's what determines whether
-    // the *next* same-color shape can flow on without a trim, which is the whole
-    // reason this exists. Only the entry side is otherwise unconstrained.
-    const optimizingForEnd = !!endPoint;
-    const target = (endPoint ?? startPoint)!;
-    const distFirst = Math.hypot(rows[0].x - target.x, rows[0].y - target.y);
-    const distLast = Math.hypot(rows[rows.length - 1].x - target.x, rows[rows.length - 1].y - target.y);
-    const shouldReverse = optimizingForEnd ? distFirst < distLast : distLast < distFirst;
-    if (shouldReverse) rows.reverse();
+  const step = Math.max(0.4, stitchLength);
+  let rows: Point[];
+  if (startPoint && endPoint) {
+    // Both ends pinned down: split the fill into two regions meeting at the end
+    // point's row instead of one continuous scan bridged across an unrelated
+    // gap -- see splitFillRows for the technique.
+    rows = splitFillRows(expanded, angle, rowSpacing, stitchLength, startPoint, endPoint, step);
+  } else {
+    rows = tatamiRows(expanded, angle, rowSpacing, stitchLength);
+    // A boustrophedon scan's two natural ends are always at opposite Y-extremes of
+    // the shape (relative to the fill angle) -- reversing the whole point sequence
+    // is still a valid scan (each row's own internal direction flips too, so the
+    // zigzag stays consistent), just walked from the other end. Picking whichever
+    // direction lands its *natural finish* closer to the one point that's set is
+    // the fix for a long bridge back across the fill when only a start or only an
+    // end is pinned (both-pinned uses splitFillRows above instead).
+    if (rows.length > 1 && (startPoint || endPoint)) {
+      const target = (endPoint ?? startPoint)!;
+      const distFirst = Math.hypot(rows[0].x - target.x, rows[0].y - target.y);
+      const distLast = Math.hypot(rows[rows.length - 1].x - target.x, rows[rows.length - 1].y - target.y);
+      const shouldReverse = !!endPoint ? distFirst < distLast : distLast < distFirst;
+      if (shouldReverse) rows.reverse();
+    }
   }
   // The underlay is a there-and-back trip: it starts at the entry point, delivers
   // out to the far side, and returns -- so it always ends back at (or very near)
@@ -120,7 +181,7 @@ function fillStitches(
     for (const p of underlayPts) out.push({ x: p.x, y: p.y, command: 'STITCH' });
   }
   if (entry && topFirst && (Math.abs(entry.x - topFirst.x) > 0.05 || Math.abs(entry.y - topFirst.y) > 0.05)) {
-    for (const p of bridge(polygon, entry, topFirst, Math.max(0.4, stitchLength))) {
+    for (const p of bridge(polygon, entry, topFirst, step)) {
       out.push({ x: p.x, y: p.y, command: 'STITCH' });
     }
   }
@@ -132,7 +193,7 @@ function fillStitches(
   // deliberate rather than a straight line back across the shape's interior.
   const lastRowPoint = rows[rows.length - 1];
   if (endPoint && lastRowPoint && (Math.abs(lastRowPoint.x - endPoint.x) > 0.05 || Math.abs(lastRowPoint.y - endPoint.y) > 0.05)) {
-    for (const p of bridge(expanded, lastRowPoint, endPoint, Math.max(0.4, stitchLength))) {
+    for (const p of bridge(expanded, lastRowPoint, endPoint, step)) {
       out.push({ x: p.x, y: p.y, command: 'STITCH' });
     }
   }

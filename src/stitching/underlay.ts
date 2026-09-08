@@ -194,12 +194,13 @@ export function fillUnderlay(polygon: Point[], topAngle: number, settings: Under
     case 'edge-run':
       return edgeRunFill(inset, spacing, entryPoint);
     case 'tatami':
-      // A scanline fill only touches two of the four sides at each row's endpoint —
-      // it never actually walks along the other two, which is exactly the "gap" a
-      // plain tatami underlay leaves at the perimeter. Adding the perimeter trace
-      // here (rather than requiring the user to add it as a separate Underlay 2
-      // pass) makes "tatami" mean fully-stabilized-including-the-edge by default.
-      return [...edgeRunFill(inset, spacing, entryPoint), ...tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5)];
+      // Plain scanline rows only -- no automatic edge-run trace prepended (per
+      // the user's explicit correction). A scanline fill only touches two of
+      // the four sides at each row's endpoint, so this alone leaves the other
+      // two perimeter edges unstitched by the underlay; add edge-run as an
+      // explicit Underlay 2 pass when that stabilization is wanted, rather
+      // than having "tatami" silently mean something extra.
+      return tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5);
     case 'double-tatami': {
       // One pass perpendicular to the top stitching, one parallel to it -- a crossed
       // grid (horizontal one way, vertical the other), not the same direction twice.
