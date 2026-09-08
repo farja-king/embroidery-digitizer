@@ -28,6 +28,7 @@ export function defaultObject(kind: StitchKind, points: PathPoint[], color: RGB)
       pullCompensation: 0.3,
       startPoint: null,
       endPoint: null,
+      bridgeMode: 'perimeter',
     },
   };
 }
@@ -365,7 +366,13 @@ function loadInitial(): Document {
           if (o.kind === 'satin' && o.satin.pullCompensation === undefined) {
             return { ...o, satin: { ...o.satin, pullCompensation: 0.2 } };
           }
-          if (o.kind === 'fill' && (o.fill.pullCompensation === undefined || o.fill.startPoint === undefined || o.fill.endPoint === undefined)) {
+          if (
+            o.kind === 'fill' &&
+            (o.fill.pullCompensation === undefined ||
+              o.fill.startPoint === undefined ||
+              o.fill.endPoint === undefined ||
+              o.fill.bridgeMode === undefined)
+          ) {
             return {
               ...o,
               fill: {
@@ -373,6 +380,7 @@ function loadInitial(): Document {
                 pullCompensation: o.fill.pullCompensation ?? 0.3,
                 startPoint: o.fill.startPoint ?? null,
                 endPoint: o.fill.endPoint ?? null,
+                bridgeMode: o.fill.bridgeMode ?? 'perimeter',
               },
             };
           }

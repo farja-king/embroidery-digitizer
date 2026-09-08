@@ -455,6 +455,16 @@ export default function PropertiesPanel() {
             step={0.05}
             onChange={(v) => update({ fill: { ...obj.fill, pullCompensation: v } })}
           />
+          <label className="field row" title="Controls how the start/end alignment and underlay handoff bridges travel: along the shape's own edge (hidden under the fill), or straight across the interior (shorter, but only hidden if the fill is dense).">
+            <input
+              type="checkbox"
+              checked={obj.fill.bridgeMode === 'straight'}
+              onChange={(e) =>
+                update({ fill: { ...obj.fill, bridgeMode: e.target.checked ? 'straight' : 'perimeter' } })
+              }
+            />
+            Bridge straight through interior (vs around the edge)
+          </label>
           <TwoPassUnderlayFields
             obj={obj}
             underlay={obj.fill.underlay}

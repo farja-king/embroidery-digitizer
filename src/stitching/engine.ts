@@ -1,5 +1,5 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { flattenPath, normalAt, offsetPolygon, perimeterBridge, resamplePath, tatamiRows } from './geometry';
+import { flattenPath, normalAt, offsetPolygon, perimeterBridge, resamplePath, straightBridge, tatamiRows } from './geometry';
 import { autoUnderlayType, fillUnderlay, normalizeUnderlay, satinUnderlay } from './underlay';
 
 /** Runs both underlay passes and concatenates their stitches, pass 1 then pass 2.
@@ -69,8 +69,12 @@ function fillStitches(
   pullCompensation: number,
   startPoint: Point | null,
   endPoint: Point | null,
+  bridgeMode: 'perimeter' | 'straight',
 ): StitchPoint[] {
   if (polygon.length < 3) return [];
+  const bridge = bridgeMode === 'straight'
+    ? (_shape: Point[], from: Point, to: Point, step: number) => straightBridge(from, to, step)
+    : perimeterBridge;
   const out: StitchPoint[] = [];
   // Dense fill stitching pulls the fabric in toward the shape's center, so the top
   // layer is generated slightly past the digitized outline to come out true-to-size
@@ -116,7 +120,7 @@ function fillStitches(
     for (const p of underlayPts) out.push({ x: p.x, y: p.y, command: 'STITCH' });
   }
   if (entry && topFirst && (Math.abs(entry.x - topFirst.x) > 0.05 || Math.abs(entry.y - topFirst.y) > 0.05)) {
-    for (const p of perimeterBridge(polygon, entry, topFirst, Math.max(0.4, stitchLength))) {
+    for (const p of bridge(polygon, entry, topFirst, Math.max(0.4, stitchLength))) {
       out.push({ x: p.x, y: p.y, command: 'STITCH' });
     }
   }
@@ -128,7 +132,7 @@ function fillStitches(
   // deliberate rather than a straight line back across the shape's interior.
   const lastRowPoint = rows[rows.length - 1];
   if (endPoint && lastRowPoint && (Math.abs(lastRowPoint.x - endPoint.x) > 0.05 || Math.abs(lastRowPoint.y - endPoint.y) > 0.05)) {
-    for (const p of perimeterBridge(expanded, lastRowPoint, endPoint, Math.max(0.4, stitchLength))) {
+    for (const p of bridge(expanded, lastRowPoint, endPoint, Math.max(0.4, stitchLength))) {
       out.push({ x: p.x, y: p.y, command: 'STITCH' });
     }
   }
@@ -160,6 +164,7 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
         obj.fill.pullCompensation ?? 0,
         obj.fill.startPoint ?? null,
         obj.fill.endPoint ?? null,
+        obj.fill.bridgeMode ?? 'perimeter',
       );
     }
     default:

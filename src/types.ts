@@ -98,6 +98,12 @@ export interface FillParams {
   // wherever the scan happens to begin/stop.
   startPoint: Point | null;
   endPoint: Point | null;
+  // How the bridge stitches above (start/end alignment, and the underlay-to-top
+  // handoff) get from one point to another: 'perimeter' walks the shape's own
+  // edge (the default -- keeps travel stitches hidden under where the fill
+  // itself will cover them), 'straight' cuts directly through the interior
+  // (shorter, but only hidden if the fill is dense enough to bury it).
+  bridgeMode: 'perimeter' | 'straight';
 }
 
 export interface EmbObject {

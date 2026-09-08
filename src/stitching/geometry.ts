@@ -223,6 +223,13 @@ export function perimeterBridge(polygon: Point[], from: Point, to: Point, step: 
   return out;
 }
 
+/** A direct line from `from` to `to`, resampled at `step` -- the "straight through
+ * the interior" alternative to perimeterBridge's "walk the edge". Shorter, but only
+ * looks clean where the fill is dense enough to bury a stitch cutting across it. */
+export function straightBridge(from: Point, to: Point, step: number): Point[] {
+  return resamplePath([from, to], Math.max(0.2, step)).slice(1);
+}
+
 export function rotatePoint(p: Point, origin: Point, angleDeg: number): Point {
   const a = (angleDeg * Math.PI) / 180;
   const cos = Math.cos(a);
