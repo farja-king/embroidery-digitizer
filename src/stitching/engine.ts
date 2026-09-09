@@ -109,10 +109,20 @@ function splitFillRows(
   const farRange: [number, number] = nearIsMin ? [splitY, shapeMaxY] : [shapeMinY, splitY];
   // Near region's ascending order already runs start-side-first only when its
   // range starts at the shape's own min extreme; otherwise it needs reversing
-  // so it still starts at the extreme (near the start point). Far region's
-  // ascending order always starts at the split (the wrong end), so it always
-  // needs reversing to start at the far extreme and finish back at the split.
+  // so it still starts at the extreme (near the start point). Far region is
+  // the mirror image: its ascending order starts at the split (the wrong end)
+  // ONLY when near sits on the min side (so far's own range runs [split, max]
+  // -- ascending starts at split) -- when near sits on the max side instead,
+  // far's range is [min, split], whose ascending order already starts at the
+  // far (min) extreme and needs no reversing. Reversing unconditionally here
+  // (as this used to) is correct for exactly one of the two cases and
+  // silently produces the *opposite* of the intended "far extreme first, ends
+  // at split" order in the other -- which reads as one continuous scan
+  // straight through the split with no seam, since a wrongly-ordered far
+  // region still happens to start right where near left off. That's exactly
+  // the "doesn't split, walks straight through to the far end" symptom.
   const nearNeedsReverse = !nearIsMin;
+  const farNeedsReverse = nearIsMin;
 
   // Degenerate case: start and end are actually close together (in the fill
   // angle's own Y axis, not just wherever splitY happens to land) -- there's no
@@ -151,7 +161,8 @@ function splitFillRows(
     for (const farLtr of [true, false]) {
       let near = tatamiRows(polygon, angle, rowSpacing, stitchLength, nearRange, splitY, nearLtr);
       if (nearNeedsReverse) near = near.reverse();
-      const far = tatamiRows(polygon, angle, rowSpacing, stitchLength, farRange, splitY, farLtr).reverse();
+      let far = tatamiRows(polygon, angle, rowSpacing, stitchLength, farRange, splitY, farLtr);
+      if (farNeedsReverse) far = far.reverse();
       // An empty side here just means the split landed right at a shape extreme
       // (the end point sits exactly at the far/near natural edge) -- a perfectly
       // normal single-region scan, not the degenerate case handled above. No
