@@ -40,7 +40,11 @@ export function autoUnderlayType(obj: EmbObject, pass: 1 | 2 = 1): UnderlayType 
     // a fill, so 'auto' on pass 2 still means none here.
     if (pass === 2) return 'none';
     const w = obj.satin.width;
-    if (w < 1.5) return 'none'; // too narrow to need stabilizing
+    // Even a narrow column gets a centre-run. This used to return 'none' below
+    // 1.5mm on the grounds that such a column barely needs stabilizing, but a
+    // run down the middle is cheap, it gives the column something to sit on
+    // rather than pulling straight into bare fabric, and it is what the default
+    // column (1mm) is meant to have.
     if (w < 4) return 'center-run';
     if (w < 8) return 'zigzag';
     return 'double-zigzag';

@@ -38,10 +38,14 @@ export function defaultObject(kind: StitchKind, points: PathPoint[], color: RGB)
     visible: true,
     locked: false,
     running: { stitchLength: 2.5, triple: false },
-    satin: { width: 3, density: 0.4, underlay: defaultTwoPassUnderlay('zigzag'), pullCompensation: 0.2 },
+    // Defaults set from the user's own machine and Hatch comparisons: a 1mm
+    // column, 0.36mm between same-rail penetrations, 0.35mm pull compensation,
+    // and a single centre-run underlay. `density` here is the same-rail gap
+    // (see satinStitches), so 0.36 means what 0.36 means in Hatch.
+    satin: { width: 1, density: 0.36, underlay: defaultTwoPassUnderlay('center-run'), pullCompensation: 0.35 },
     fill: {
-      angle: 0,
-      rowSpacing: 0.4,
+      angle: 25,
+      rowSpacing: 0.36,
       stitchLength: 3,
       underlay: defaultTwoPassUnderlay('tatami'),
       pullCompensation: 0.3,

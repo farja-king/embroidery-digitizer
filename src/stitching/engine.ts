@@ -225,7 +225,16 @@ function satinStitches(
   underlayPts: Point[],
   pullCompensation: number,
 ): StitchPoint[] {
-  const sampled = resamplePath(points, Math.max(0.2, density));
+  // `density` is the gap between two needle penetrations on the SAME rail --
+  // the measure every digitizer and Hatch itself uses, and the number stamped on
+  // the properties panel. A satin alternates rails on every stitch, so the
+  // centerline has to be sampled at half that gap to produce it. Sampling the
+  // centerline at `density` directly (which this used to do) laid down same-rail
+  // stitches twice as far apart as the setting claimed: 0.4 gave 0.8mm, so a
+  // column set to a normal density came out at half the thread it should have.
+  // Measured against Hatch's own text export, which lands on 0.400mm same-rail
+  // at its 0.4 setting.
+  const sampled = resamplePath(points, Math.max(0.05, density / 2));
   const out: StitchPoint[] = [];
   for (const p of underlayPts) out.push({ x: p.x, y: p.y, command: 'STITCH' });
   // Thread tension pulls stitched fabric in toward the column's centerline, so a
