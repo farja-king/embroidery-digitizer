@@ -605,6 +605,25 @@ export default function Canvas() {
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
+    // A "move-endpoint" drag only actually sets fill.startPoint/endPoint from
+    // inside onPointerMove -- so a plain click with no real mouse movement
+    // (grabbing a marker that's already sitting right where the user wants it,
+    // which is exactly the common case: it's on the fallback vertex already)
+    // never fires a single pointermove and never commits anything. The marker
+    // stays hollow/unset with no feedback that the click "did nothing" at all.
+    // Explicitly commit to the marker's current (fallback) position here if a
+    // move-endpoint drag ends without ever having set an explicit value.
+    if (drag?.kind === 'move-endpoint') {
+      const obj = doc.objects.find((o) => o.id === drag.id);
+      if (obj && obj.kind === 'fill') {
+        const isSet = drag.which === 'start' ? obj.fill.startPoint != null : obj.fill.endPoint != null;
+        if (!isSet) {
+          const fallback = drag.which === 'start' ? obj.points[0] : obj.points[obj.points.length - 1];
+          const patch = drag.which === 'start' ? { startPoint: { x: fallback.x, y: fallback.y } } : { endPoint: { x: fallback.x, y: fallback.y } };
+          dispatch({ type: 'UPDATE_OBJECT', id: drag.id, patch: { fill: { ...obj.fill, ...patch } } });
+        }
+      }
+    }
     if (drag?.kind === 'marquee') {
       // Compute the release point straight from this event rather than trusting the
       // `mousePos` state: a fast drag can fire pointerup before React has re-rendered
