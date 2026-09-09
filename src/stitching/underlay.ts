@@ -1,5 +1,5 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { bridgeRowGaps, dist, normalAt, offsetPolygon, polygonArea, resamplePath, tatamiRows } from './geometry';
+import { bridgeRowGaps, dist, isConvexPolygon, normalAt, offsetPolygon, polygonArea, resamplePath, tatamiRows } from './geometry';
 
 // A fill underlay sits entirely inside the top stitching's coverage — roughly one
 // thread width in from the digitized outline — so none of its own stitches (the
@@ -32,6 +32,15 @@ export function autoUnderlayType(obj: EmbObject): UnderlayType {
   if (obj.kind === 'fill') {
     const area = Math.abs(polygonArea(obj.points));
     if (area < 30) return 'edge-run'; // small shape: just walk the perimeter
+    // A row-grid underlay (tatami/double-tatami) assumes a single fixed scan
+    // direction can cross the shape cleanly -- true on a convex outline, but a
+    // non-convex one (a staircase, a zigzag, a star) has no direction that
+    // doesn't cut across its own waist/notches repeatedly, since every row
+    // still has to jump between whichever of the shape's lobes it happens to
+    // clip. That reads as many short "runs up and down the height" rather than
+    // real stabilization. Edge-run only ever walks the actual boundary once, so
+    // it can't have this problem regardless of how irregular the outline is.
+    if (!isConvexPolygon(obj.points)) return 'edge-run';
     // Double-tatami's two crossed passes read as visibly "busy" next to the top
     // stitching in preview (each pass alone is properly sparse relative to the
     // top rows, but combined they can look like broken/uneven coverage) -- kept
@@ -188,6 +197,15 @@ export function fillUnderlay(polygon: Point[], topAngle: number, settings: Under
   if (type === 'none' || polygon.length < 3) return [];
   const inset = offsetPolygon(polygon, -UNDERLAY_INSET_MM);
   const spacing = settings.spacing;
+  // The perpendicular ("cross-grain") direction is standard practice on a convex
+  // shape, but on a concave one (two lobes joined by a narrow waist, a staircase,
+  // an L) a fixed perpendicular angle can run straight across the waist on nearly
+  // every row -- reading as long, repeated "runs up and down the height" rather
+  // than staying within each lobe, since it has no way to know the shape bends.
+  // Falling back to the top angle itself avoids that: it's the same direction the
+  // (already concave-aware, see isConvexPolygon in fillStitches) top stitching
+  // itself uses, which naturally follows the shape instead of cutting across it.
+  const perpAngle = isConvexPolygon(polygon) ? topAngle + 90 : topAngle;
   switch (type) {
     case 'center-run':
       return centerRun(entryPoint ? rotateToNearest(inset, entryPoint) : inset, true, spacing);
@@ -204,15 +222,18 @@ export function fillUnderlay(polygon: Point[], topAngle: number, settings: Under
       // (both arms of an L, either side of a notch) -- bridgeRowGaps routes any
       // such gap along the shape's own boundary instead of a stray straight
       // stitch across the open space between them.
-      return bridgeRowGaps(tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5), inset, spacing * 4, spacing);
+      return bridgeRowGaps(tatamiRows(inset, perpAngle, spacing, spacing * 1.5), inset, spacing * 4, spacing);
     case 'double-tatami': {
       // One pass perpendicular to the top stitching, one parallel to it -- a crossed
       // grid (horizontal one way, vertical the other), not the same direction twice.
-      // bridgeRowGaps runs on the whole concatenation (not just within each pass
-      // individually) since the handoff between edge-run and passA, and between
-      // passA and passB, is exactly the same kind of gap as within a single pass.
-      const passA = tatamiRows(inset, topAngle + 90, spacing, spacing * 1.5);
-      const passB = tatamiRows(inset, topAngle, spacing, spacing * 1.5);
+      // On a concave shape perpAngle already collapses to topAngle (see above), so
+      // passA and passB would otherwise duplicate the same rows -- phase-shifted by
+      // half a row instead in that case, so "double" still means real extra coverage
+      // rather than literally re-stitching the same lines twice.
+      const passA = tatamiRows(inset, perpAngle, spacing, spacing * 1.5);
+      const passB = isConvexPolygon(polygon)
+        ? tatamiRows(inset, topAngle, spacing, spacing * 1.5)
+        : tatamiRows(inset, topAngle, spacing, spacing * 1.5, undefined, spacing / 2);
       const combined = [...edgeRunFill(inset, spacing, entryPoint), ...passA, ...passB];
       return bridgeRowGaps(combined, inset, spacing * 4, spacing);
     }
