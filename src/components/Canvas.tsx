@@ -892,12 +892,22 @@ export default function Canvas() {
         // instead of the two-region split technique. Drawn hollow (ring only, no
         // fill) instead of solid to make that distinction visible.
         const drawMarker = (pt: Point, color: string, hovered: boolean, isExplicit: boolean) => {
+          const r = hovered ? 7 : 5.5;
+          // A solid white "halo" behind the marker itself, a couple px larger, so it
+          // reads clearly against ANY fill color -- including a red end marker sitting
+          // on the user's own red-filled shape, where the marker used to all but
+          // disappear into the fill and made "is this actually set" impossible to
+          // tell just by looking, regardless of whether it actually was.
           ctx.beginPath();
-          ctx.arc(pt.x, pt.y, hovered ? 7 : 5.5, 0, Math.PI * 2);
+          ctx.arc(pt.x, pt.y, r + 2.5, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
           if (isExplicit) {
             ctx.fillStyle = color;
             ctx.fill();
-            ctx.strokeStyle = '#ffffff';
+            ctx.strokeStyle = '#000000';
             ctx.lineWidth = 1.5;
           } else {
             ctx.fillStyle = '#ffffff';
