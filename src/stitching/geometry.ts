@@ -604,6 +604,41 @@ export function connectedRegionRows(
     }
     out.push(block);
   }
+
+  // A genuinely tiny sliver (a handful of stitches right at a sharp corner or
+  // notch, where the fine topology grid legitimately sees a separate blob)
+  // still gets treated by the caller as its own region needing two travel
+  // bridges -- there and back -- to reach just 2-6 stitches almost exactly
+  // where the main block already passed nearby. That reads as revisiting the
+  // same spot over and over rather than a real region transition. Folding it
+  // directly into whichever other block has the nearest point instead avoids
+  // that round trip; any seam it creates is exactly what bridgeRowGaps
+  // (already run on this function's output by every caller) exists to smooth
+  // over, so a simple append is enough here.
+  const MIN_BLOCK_SIZE = 15;
+  out.sort((a, b) => b.length - a.length);
+  for (let i = out.length - 1; i >= 0; i--) {
+    if (out[i].length >= MIN_BLOCK_SIZE || out.length <= 1) continue;
+    const small = out[i];
+    let bestJ = -1;
+    let bestDist = Infinity;
+    for (let j = 0; j < out.length; j++) {
+      if (j === i) continue;
+      const other = out[j];
+      const d = Math.min(
+        Math.hypot(small[0].x - other[other.length - 1].x, small[0].y - other[other.length - 1].y),
+        Math.hypot(small[small.length - 1].x - other[0].x, small[small.length - 1].y - other[0].y),
+      );
+      if (d < bestDist) {
+        bestDist = d;
+        bestJ = j;
+      }
+    }
+    if (bestJ >= 0) {
+      out[bestJ] = [...out[bestJ], ...small];
+      out.splice(i, 1);
+    }
+  }
   return out;
 }
 
