@@ -298,7 +298,7 @@ function fillStitches(
     // anchored starting as close to the start point as possible. The final
     // endpoint bridge below still reaches the actual end point regardless of
     // where the chain naturally finishes.
-    rows = regionChainRows(expanded, angle, rowSpacing, stitchLength, startPoint, step);
+    rows = regionChainRows(expanded, angle, rowSpacing, stitchLength, startPoint, step, endPoint);
   } else if (startPoint && endPoint) {
     // Both ends pinned down, convex outline: split the fill into two regions
     // meeting at the end point's row instead of one continuous scan bridged
@@ -315,7 +315,14 @@ function fillStitches(
   // the end of one span to the start of the next, a stray stitch cutting across
   // whatever open space sits between them. Route any such gap along the shape's
   // own boundary instead, same reasoning as every other bridge in this function.
-  const maxRowGap = Math.max(stitchLength, rowSpacing) * 3;
+  // The threshold is deliberately close to the fill's own stitch length: anything
+  // longer than about a stitch and a half isn't a row-to-row step any more, it's
+  // travel, and travel belongs on the boundary rather than cutting across open
+  // space. A real Hatch file (measured from a user-supplied DST) never exceeds
+  // roughly its own stitch length anywhere -- every move, including travel
+  // between parts of a shape, is an ordinary walking stitch along the edge --
+  // so a generous multiple here just leaves visible strays behind.
+  const maxRowGap = Math.max(stitchLength, rowSpacing) * 1.5;
   rows = bridgeRowGaps(rows, expanded, maxRowGap, step);
   // Entry: from the chosen start point (if any) to wherever generation actually
   // begins -- the underlay's own first stitch when there's underlay, otherwise
@@ -361,7 +368,30 @@ function fillStitches(
       out.push({ x: p.x, y: p.y, command: 'STITCH' });
     }
   }
-  return out;
+  // Nothing a fill emits -- rows, entry, the underlay handoff, travel bridges --
+  // should ever be longer than the stitch length the object is set to. The
+  // format-level guard (clampLongStitches, at 12.1mm) only exists to keep a file
+  // writable; it is not a quality bar. Measured against a real Hatch file, every
+  // single stitch including travel stays at or under its own stitch length, and
+  // a lone oversized stitch left in the middle of an otherwise even run is
+  // exactly the kind of thing that reads as sloppy on fabric.
+  const maxFillStitch = Math.max(0.5, stitchLength);
+  const evened: StitchPoint[] = [];
+  for (const sp of out) {
+    const prev = evened.length ? evened[evened.length - 1] : null;
+    if (prev) {
+      const d = Math.hypot(sp.x - prev.x, sp.y - prev.y);
+      if (d > maxFillStitch) {
+        const steps = Math.ceil(d / maxFillStitch);
+        for (let s = 1; s < steps; s++) {
+          const t = s / steps;
+          evened.push({ x: prev.x + (sp.x - prev.x) * t, y: prev.y + (sp.y - prev.y) * t, command: 'STITCH' });
+        }
+      }
+    }
+    evened.push(sp);
+  }
+  return evened;
 }
 
 export function generateObjectStitches(obj: EmbObject): StitchPoint[] {

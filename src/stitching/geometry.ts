@@ -219,7 +219,18 @@ export function perimeterBridge(polygon: Point[], from: Point, to: Point, step: 
     const t = forward ? (a.t + (span * i) / steps) % total : ((a.t - (span * i) / steps) % total + total) % total;
     out.push(pointAtT(loop, t));
   }
-  out.push(to);
+  // `to` is wherever the caller actually needs to arrive, which is generally a
+  // little off the boundary the walk just followed (a fill row's end, an entry
+  // marker). Stepping straight onto it would leave one oversized stitch at the
+  // end of an otherwise evenly-walked bridge, so cover that last hop at the same
+  // pitch as the rest -- real machine output never has a stray long stitch
+  // hiding at the end of a travel run.
+  const lastOnLoop = out.length ? out[out.length - 1] : from;
+  if (dist(lastOnLoop, to) > Math.max(0.2, step)) {
+    out.push(...resamplePath([lastOnLoop, to], Math.max(0.2, step)).slice(1));
+  } else {
+    out.push(to);
+  }
   return out;
 }
 
@@ -640,12 +651,40 @@ export function regionChainRows(
   stitchLength: number,
   anchor: Point | null,
   step: number,
+  endPoint: Point | null = null,
 ): Point[] {
   const blocks = connectedRegionRows(polygon, angle, rowSpacing, stitchLength);
   if (blocks.length === 0) return [];
-  if (blocks.length === 1) return blocks[0];
 
-  const remaining = [...blocks];
+  // Whichever cell the end point falls in has to be stitched LAST, and split
+  // inside itself so the fill actually *finishes* next to the marker (see
+  // splitCellAtEndpoint) rather than wherever its snake happened to run out.
+  // Without this a concave shape lost the near/far technique entirely -- the
+  // scan covered the whole outline top to bottom and then had to walk all the
+  // way back to an end point that was up at the top, which is the long
+  // "walking stitch back to the endpoint" this exists to avoid. Convex shapes
+  // get the same treatment from splitFillRows; this is that idea generalised
+  // to per-cell so it survives a concave outline too.
+  let finalIdx = -1;
+  if (endPoint) {
+    let best = Infinity;
+    for (let i = 0; i < blocks.length; i++) {
+      for (const p of blocks[i]) {
+        const d = Math.hypot(p.x - endPoint.x, p.y - endPoint.y);
+        if (d < best) {
+          best = d;
+          finalIdx = i;
+        }
+      }
+    }
+  }
+  const finalBlock = finalIdx >= 0 ? blocks[finalIdx] : null;
+  const remaining = blocks.filter((_, i) => i !== finalIdx);
+  if (remaining.length === 0 && finalBlock) {
+    return splitCellAtEndpoint(finalBlock, polygon, angle, endPoint!, anchor, step);
+  }
+  if (!finalBlock && blocks.length === 1) return blocks[0];
+
   let current: Point | null = anchor;
   const out: Point[] = [];
   while (remaining.length) {
@@ -680,7 +719,126 @@ export function regionChainRows(
     out.push(...block);
     current = block[block.length - 1];
   }
+
+  if (finalBlock) {
+    const tail = splitCellAtEndpoint(finalBlock, polygon, angle, endPoint!, current, step);
+    if (current && tail.length) {
+      const first = tail[0];
+      if (Math.abs(current.x - first.x) > 0.05 || Math.abs(current.y - first.y) > 0.05) {
+        out.push(...perimeterBridge(polygon, current, first, step));
+      }
+    }
+    out.push(...tail);
+  }
   return out;
+}
+
+/** Reorders one cell's own snake so it finishes at the end point's row instead of
+ * at whichever extreme the scan happened to reach last -- the same near/far
+ * technique splitFillRows uses on a convex shape, applied to a single cell so it
+ * works on a concave one too. The cell's points are already in row order, so the
+ * end point's row is a single index: everything before it is the "near" part and
+ * everything after the "far" part. Whichever part the thread arrives closest to
+ * gets stitched first (ending at the split), then the boundary is walked once to
+ * the far part's outer extreme, and that part is stitched back inward -- so both
+ * halves finish next to the marker and only one travel is needed. */
+function splitCellAtEndpoint(
+  cell: Point[],
+  polygon: Point[],
+  angle: number,
+  endPoint: Point,
+  arriveFrom: Point | null,
+  step: number,
+): Point[] {
+  if (cell.length < 4) return cell;
+  const c = centroid(polygon);
+  const rowOf = (p: Point) => rotatePoint(p, c, -angle).y;
+  const endRow = rotatePoint(endPoint, c, -angle).y;
+
+  // Regroup the cell's flat snake back into its rows so they can be reordered
+  // freely -- every point of one row shares the same coordinate in the scan's
+  // own rotated frame, so a change in that value is exactly a row boundary.
+  const rows: Point[][] = [];
+  let curRow = Number.NaN;
+  for (const p of cell) {
+    const y = rowOf(p);
+    if (!(Math.abs(y - curRow) < 1e-6)) {
+      rows.push([p]);
+      curRow = y;
+    } else rows[rows.length - 1].push(p);
+  }
+  if (rows.length < 3) return cell;
+
+  // Emits a list of rows in the given order, flipping each row so it starts at
+  // whichever of its two ends is nearer where the thread already is. That keeps
+  // the snake continuous no matter what order the rows are visited in.
+  const emit = (list: Point[][], from: Point | null): Point[] => {
+    const out: Point[] = [];
+    let cursor = from;
+    for (const row of list) {
+      const head = row[0];
+      const tail = row[row.length - 1];
+      const flip =
+        cursor !== null &&
+        Math.hypot(tail.x - cursor.x, tail.y - cursor.y) < Math.hypot(head.x - cursor.x, head.y - cursor.y);
+      const oriented = flip ? [...row].reverse() : row;
+      out.push(...oriented);
+      cursor = oriented[oriented.length - 1];
+    }
+    return out;
+  };
+  const join = (a: Point[], b: Point[]): Point[] => {
+    if (!a.length || !b.length) return [...a, ...b];
+    const from = a[a.length - 1];
+    const to = b[0];
+    const bridge =
+      Math.abs(from.x - to.x) > 0.05 || Math.abs(from.y - to.y) > 0.05
+        ? perimeterBridge(polygon, from, to, step)
+        : [];
+    return [...a, ...bridge, ...b];
+  };
+
+  const lowY = rowOf(rows[0][0]);
+  const highY = rowOf(rows[rows.length - 1][0]);
+  const span = Math.abs(highY - lowY) || 1;
+  const arrRow = arriveFrom ? rowOf(arriveFrom) : lowY;
+  const arrivesLow = Math.abs(arrRow - lowY) <= Math.abs(arrRow - highY);
+  const endNearLow = Math.abs(endRow - lowY) < span * 0.15;
+  const endNearHigh = Math.abs(highY - endRow) < span * 0.15;
+
+  // Start and finish both sit at the same end of the cell: the only way to cover
+  // it and still come back is a genuine there-and-back -- every other row on the
+  // way out, the rows in between on the way home. One travel, and it finishes
+  // right where the end marker is. (Same technique thereAndBackRows applies to a
+  // convex shape; this is it generalised to a single cell.)
+  if ((endNearLow && arrivesLow) || (endNearHigh && !arrivesLow)) {
+    const order = rows.map((_, i) => i);
+    if (!arrivesLow) order.reverse();
+    const outbound = order.filter((_, k) => k % 2 === 0).map((i) => rows[i]);
+    const inbound = order.filter((_, k) => k % 2 === 1).reverse().map((i) => rows[i]);
+    const first = emit(outbound, arriveFrom);
+    return join(first, emit(inbound, first[first.length - 1] ?? null));
+  }
+
+  // Finish is at the opposite end from the start: a plain snake straight through
+  // already ends in the right place.
+  if (endNearLow || endNearHigh) {
+    const order = endNearHigh ? rows : [...rows].reverse();
+    return emit(order, arriveFrom);
+  }
+
+  // Finish is somewhere in the middle: fill up to its row from the side the
+  // thread is already on, walk the boundary once to the far extreme, then fill
+  // back inward so the last stitch lands on the end marker's row.
+  let splitRow = rows.findIndex((row) => rowOf(row[0]) >= endRow);
+  if (splitRow <= 0) splitRow = 1;
+  if (splitRow >= rows.length) splitRow = rows.length - 1;
+  const near = rows.slice(0, splitRow);
+  const far = rows.slice(splitRow);
+  const firstHalf = arrivesLow ? emit(near, arriveFrom) : emit([...far].reverse(), arriveFrom);
+  const cursor = firstHalf[firstHalf.length - 1] ?? null;
+  const secondHalf = arrivesLow ? emit([...far].reverse(), cursor) : emit(near, cursor);
+  return join(firstHalf, secondHalf);
 }
 
 /** Offsets every point of an already-fine *open* path along its own local
