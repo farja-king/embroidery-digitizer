@@ -20,9 +20,25 @@ export function normalizeUnderlay(field: TwoPassUnderlay | UnderlaySettings | un
 }
 
 /** Picks a sensible underlay type from the object's own dimensions, the way a human
- * digitizer would by rule of thumb — used when underlay.mode === 'auto'. */
-export function autoUnderlayType(obj: EmbObject): UnderlayType {
+ * digitizer would by rule of thumb — used when underlay.mode === 'auto'. `pass` says
+ * which of the two passes is being resolved, since the sensible default differs:
+ * for a fill that is edge-run first (stabilise and define the outline) then tatami
+ * (stabilise the interior the top stitching will sit on), which is the standard
+ * pairing a digitizer reaches for and what Hatch itself lays down. */
+export function autoUnderlayType(obj: EmbObject, pass: 1 | 2 = 1): UnderlayType {
+  // Lettering: one light center-run and nothing else, whether the glyph ended up
+  // satin or fill. Letters are small and their strokes sit close together, so the
+  // edge-run + tatami pairing a general shape wants would crowd the top stitching
+  // rather than support it. (`name` is checked too so text placed before the flag
+  // existed still gets the same treatment when an old project is reopened.)
+  if (obj.fromText || obj.name?.startsWith('Text "')) {
+    return pass === 1 ? 'center-run' : 'none';
+  }
   if (obj.kind === 'satin') {
+    // A satin column's second pass stays opt-in -- there's no conventional
+    // "always do this too" partner for a zigzag/center-run the way there is for
+    // a fill, so 'auto' on pass 2 still means none here.
+    if (pass === 2) return 'none';
     const w = obj.satin.width;
     if (w < 1.5) return 'none'; // too narrow to need stabilizing
     if (w < 4) return 'center-run';
@@ -31,23 +47,16 @@ export function autoUnderlayType(obj: EmbObject): UnderlayType {
   }
   if (obj.kind === 'fill') {
     const area = Math.abs(polygonArea(obj.points));
-    if (area < 30) return 'edge-run'; // small shape: just walk the perimeter
-    // A row-grid underlay (tatami/double-tatami) assumes a single fixed scan
-    // direction can cross the shape cleanly -- true on a convex outline, but a
-    // non-convex one (a staircase, a zigzag, a star) has no direction that
-    // doesn't cut across its own waist/notches repeatedly, since every row
-    // still has to jump between whichever of the shape's lobes it happens to
-    // clip. That reads as many short "runs up and down the height" rather than
-    // real stabilization. Edge-run only ever walks the actual boundary once, so
-    // it can't have this problem regardless of how irregular the outline is.
-    if (!isConvexPolygon(obj.points)) return 'edge-run';
+    // Below this a shape is small enough that walking its outline is the whole
+    // job -- a row grid inside it would be more travel than stabilisation.
+    if (area < 30) return pass === 1 ? 'edge-run' : 'none';
+    if (pass === 1) return 'edge-run';
     // Double-tatami's two crossed passes read as visibly "busy" next to the top
     // stitching in preview (each pass alone is properly sparse relative to the
     // top rows, but combined they can look like broken/uneven coverage) -- kept
     // for genuinely large fills where that extra cross-stability actually
     // matters, not defaulted to for anything mid-sized.
-    if (area < 900) return 'tatami';
-    return 'double-tatami';
+    return area < 900 ? 'tatami' : 'double-tatami';
   }
   return 'none';
 }

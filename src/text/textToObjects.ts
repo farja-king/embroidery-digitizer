@@ -236,6 +236,7 @@ export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
       }
       obj.id = makeId();
       obj.name = `Text "${text}"`;
+      obj.fromText = true; // drives the lettering-specific automatic underlay
       applyUnderlayMode(obj, opts.underlayMode);
       objects.push(obj);
     }

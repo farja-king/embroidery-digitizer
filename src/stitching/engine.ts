@@ -186,16 +186,17 @@ function splitFillRows(
 }
 
 /** Runs both underlay passes and concatenates their stitches, pass 1 then pass 2.
- * Pass 1's 'auto' mode uses the object's own auto heuristic; pass 2 has no such
- * heuristic (a second pass is always an opt-in extra), so its 'auto' just means "none". */
+ * Both passes resolve 'auto' through the same heuristic (see autoUnderlayType),
+ * which knows which pass it is answering for -- on a fill that means edge-run
+ * first and tatami second, the standard pairing. */
 function resolveUnderlay(
   obj: EmbObject,
   field: TwoPassUnderlay | UnderlaySettings | undefined,
   generate: (settings: UnderlaySettings, type: UnderlayType) => Point[],
 ): Point[] {
   const { pass1, pass2 } = normalizeUnderlay(field);
-  const type1 = pass1.mode === 'auto' ? autoUnderlayType(obj) : pass1.type;
-  const type2 = pass2.mode === 'auto' ? 'none' : pass2.type;
+  const type1 = pass1.mode === 'auto' ? autoUnderlayType(obj, 1) : pass1.type;
+  const type2 = pass2.mode === 'auto' ? autoUnderlayType(obj, 2) : pass2.type;
   return [...generate(pass1, type1), ...generate(pass2, type2)];
 }
 

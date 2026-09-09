@@ -59,7 +59,10 @@ export interface TwoPassUnderlay {
 }
 
 export function defaultTwoPassUnderlay(pass1Type: UnderlayType): TwoPassUnderlay {
-  return { pass1: defaultUnderlay(pass1Type, 'auto'), pass2: defaultUnderlay('none', 'manual') };
+  // Both passes start on 'auto' so autoUnderlayType decides the standard pairing
+  // for whatever the object turns out to be — for a fill that's edge-run then
+  // tatami, for a satin just the one pass, for lettering a single center-run.
+  return { pass1: defaultUnderlay(pass1Type, 'auto'), pass2: defaultUnderlay('none', 'auto') };
 }
 
 export interface SatinParams {
@@ -124,6 +127,13 @@ export interface EmbObject {
   running: RunningParams;
   satin: SatinParams;
   fill: FillParams;
+  // Set on objects produced by the text tool. Lettering is small and closely
+  // spaced, so the automatic underlay choice for it is a single light center-run
+  // rather than the edge-run + tatami pairing a general shape gets — enough to
+  // stabilise a letter without the underlay crowding the top stitching. Optional
+  // so projects saved before it existed still load (they just fall back to the
+  // ordinary shape rules).
+  fromText?: boolean;
 }
 
 export interface HoopSize {
