@@ -548,22 +548,55 @@ export function buildPattern(objects: EmbObject[], trimThresholdMm = 3): BuiltPa
   return { stitches: clampLongStitches(addTieStitches(stitches)), threads };
 }
 
-const TIE_LENGTH_MM = 0.3;
+// Measured off a real Hatch export (3 C LOGO.DST, 12 thread runs): every lock
+// reaches ~1.2mm, with the tie-in ones running a little longer (1.7-1.9mm)
+// because they match the length of the first real stitch they lead into.
+const LOCK_LENGTH_MM = 1.2;
 
-/** A tiny forward-then-back movement at `anchor`, aimed toward `toward`. Two extra
- * needle penetrations almost on top of each other lock the thread end without any
- * visible movement — the standard tie-in/tie-off technique every digitizer uses so
- * a trim doesn't let a thread end work loose. */
+/** The excursion half of a lock stitch: from `anchor`, out to half the lock
+ * length, out to the full lock length, back to half — the caller stitches
+ * `anchor` itself on either side, giving the full 0 → L/2 → L → L/2 → 0 figure.
+ *
+ * This is Hatch's own lock, read straight out of its DST rather than guessed at.
+ * Decoding a Hatch file's thread runs, every one starts and ends with exactly
+ * that four-penetration pattern along the neighbouring stitch's own direction:
+ * e.g. a run beginning 0.00, +0.90, +1.90, +0.90, 0.00 before any real
+ * stitching, and one ending -0.60, -1.20, -0.60, 0.00 back down the line it
+ * arrived on. The halfway penetration is the part that matters — it puts two
+ * needle holes at different points along the same short line so the thread has
+ * something to bind against.
+ *
+ * The previous version here was a single 0.3mm out-and-back. At that size both
+ * penetrations can land in effectively the same hole, which on a loose knit or
+ * fleece is not a lock at all. `toward` comes from lockTarget, which is far
+ * enough along the run for the lock to reach its full length even where the run
+ * is made of very short stitches; reach is still clamped to it so the lock never
+ * overshoots past where the thread actually goes. */
 function tieStitchesAt(anchor: Point, toward: Point): StitchPoint[] {
   const dx = toward.x - anchor.x;
   const dy = toward.y - anchor.y;
   const len = Math.hypot(dx, dy) || 1;
   const ux = dx / len;
   const uy = dy / len;
-  return [
-    { x: anchor.x + ux * TIE_LENGTH_MM, y: anchor.y + uy * TIE_LENGTH_MM, command: 'STITCH' },
-    { x: anchor.x, y: anchor.y, command: 'STITCH' },
-  ];
+  const reach = Math.min(LOCK_LENGTH_MM, len);
+  const at = (d: number): StitchPoint => ({ x: anchor.x + ux * d, y: anchor.y + uy * d, command: 'STITCH' });
+  return [at(reach / 2), at(reach), at(reach / 2)];
+}
+
+/** Where to aim a lock: the first point at least a lock's length along the run
+ * from the anchor. Aiming at the immediately adjacent stitch instead would
+ * collapse the lock to that stitch's length, and a run can perfectly well open
+ * or close with a string of sub-millimetre stitches (a tight curve, a short
+ * underlay segment, the evened-out travel at a row end) -- which would quietly
+ * shrink the lock back to the barely-there size this replaced. `path` starts at
+ * the anchor and runs in the direction the lock should point. */
+function lockTarget(path: Point[]): Point {
+  let acc = 0;
+  for (let i = 1; i < path.length; i++) {
+    acc += Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+    if (acc >= LOCK_LENGTH_MM) return path[i];
+  }
+  return path[path.length - 1];
 }
 
 /** Inserts tie-in stitches right after every point a new thread run starts from
@@ -600,21 +633,32 @@ function addTieStitches(stitches: StitchPoint[]): StitchPoint[] {
     const prevCmd = prevMeaningfulCommand(stitches, i);
     const isRunStart = prevCmd === null || prevCmd === 'COLOR_CHANGE' || prevCmd === 'TRIM';
     if (isRunStart) {
-      const next = stitches.slice(i + 1).find((x) => x.command === 'STITCH') ?? s;
-      out.push(...tieStitchesAt(s, next));
+      // The run's own first penetration, then the excursion out and back -- the
+      // `out.push(s)` below closes the figure by returning to it, so the needle
+      // has been down at the anchor twice with two more holes along the line
+      // between before any real stitching begins.
+      const ahead: Point[] = [s];
+      for (let j = i + 1; j < stitches.length && ahead.length < 64; j++) {
+        if (stitches[j].command !== 'STITCH') break;
+        ahead.push(stitches[j]);
+      }
+      out.push(s);
+      out.push(...tieStitchesAt(s, lockTarget(ahead)));
     }
     out.push(s);
     const nextCmd = nextMeaningfulCommand(stitches, i);
     const isRunEnd = nextCmd === 'COLOR_CHANGE' || nextCmd === 'TRIM' || nextCmd === 'END';
     if (isRunEnd) {
-      let prevStitch: StitchPoint = s;
-      for (let j = out.length - 2; j >= 0; j--) {
-        if (out[j].command === 'STITCH') {
-          prevStitch = out[j];
-          break;
-        }
+      const behind: Point[] = [s];
+      for (let j = out.length - 2; j >= 0 && behind.length < 64; j--) {
+        if (out[j].command !== 'STITCH') break;
+        behind.push(out[j]);
       }
-      out.push(...tieStitchesAt(s, prevStitch));
+      // s has already been pushed above; run back down the line the thread
+      // arrived on and return to s, so the run's final needle position is still
+      // exactly the end point the routing worked to reach.
+      out.push(...tieStitchesAt(s, lockTarget(behind)));
+      out.push(s);
     }
   }
   return out;
