@@ -1,7 +1,9 @@
 import { useRef, useState } from 'react';
-import { useStore } from '../state/store';
+import { previewOptimizedOrder, useStore } from '../state/store';
 import { HOOP_PRESETS, type Document } from '../types';
 import { exportStitchFile, type ExportFormat } from '../formats/exportPattern';
+import { buildPattern } from '../stitching/engine';
+import type { EmbObject } from '../types';
 import StitchPlayback from './StitchPlayback';
 
 const FORMATS: { id: ExportFormat; label: string }[] = [
@@ -18,6 +20,23 @@ export default function HeaderBar() {
   const [exportError, setExportError] = useState<string | null>(null);
   const [showEmbNote, setShowEmbNote] = useState(false);
   const [showPlayback, setShowPlayback] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Re-sequencing objects changes nothing you can see on the canvas -- the same
+  // shapes end up in the same places -- so the button read as doing nothing at
+  // all. Measure the actual saving and say what it was.
+  const runOptimize = () => {
+    const before = travelOf(doc.objects, doc.trimThresholdMm);
+    const after = travelOf(previewOptimizedOrder(doc.objects), doc.trimThresholdMm);
+    dispatch({ type: 'OPTIMIZE_STITCH_ORDER' });
+    const saved = before.jump - after.jump;
+    setNotice(
+      saved < 1 && before.colorChanges === after.colorChanges
+        ? 'Stitch order is already optimal — nothing to change.'
+        : `Travel ${before.jump.toFixed(0)}mm → ${after.jump.toFixed(0)}mm` +
+          `, colour changes ${before.colorChanges} → ${after.colorChanges}.`,
+    );
+  };
 
   const doExport = (format: ExportFormat) => {
     setExportError(null);
@@ -99,7 +118,7 @@ export default function HeaderBar() {
       </div>
 
       <button
-        onClick={() => dispatch({ type: 'OPTIMIZE_STITCH_ORDER' })}
+        onClick={runOptimize}
         disabled={doc.objects.length < 2}
         title="Re-sequence objects to minimize thread jumps and color changes — groups each color together and starts each shape from whichever end is closest to the last one (Hatch's 'Apply Closest Join')"
       >
@@ -136,6 +155,12 @@ export default function HeaderBar() {
         </button>
       </div>
 
+      {notice && (
+        <div className="toast info" onClick={() => setNotice(null)}>
+          {notice}
+        </div>
+      )}
+
       {exportError && (
         <div className="toast error" onClick={() => setExportError(null)}>
           {exportError}
@@ -163,4 +188,19 @@ export default function HeaderBar() {
       {showPlayback && <StitchPlayback onClose={() => setShowPlayback(false)} />}
     </div>
   );
+}
+
+/** Thread spent travelling between objects, and how many times the machine has
+ * to be re-threaded -- the two things re-sequencing is trying to reduce. */
+function travelOf(objects: EmbObject[], trimThresholdMm: number): { jump: number; colorChanges: number } {
+  const { stitches } = buildPattern(objects, trimThresholdMm);
+  let jump = 0;
+  let colorChanges = 0;
+  let prev: { x: number; y: number } | null = null;
+  for (const s of stitches) {
+    if (s.command === 'JUMP' && prev) jump += Math.hypot(s.x - prev.x, s.y - prev.y);
+    if (s.command === 'COLOR_CHANGE') colorChanges++;
+    prev = s;
+  }
+  return { jump, colorChanges };
 }

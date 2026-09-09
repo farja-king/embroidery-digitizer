@@ -126,6 +126,10 @@
   border-color: var(--border) !important;
 }
 
+.toast.info {
+  border-color: #b9cfae;
+  color: #2f5d22;
+}
 .toast {
   position: absolute;
   right: 16px;
@@ -350,8 +354,10 @@
   background: #fff;
   border-radius: 10px;
   padding: 16px;
-  width: min(820px, 92vw);
-  height: min(640px, 88vh);
+  /* Twice the size it was (820x640): the point of the stitch-out preview is to
+     see individual stitches, and at the old size a dense fill was a solid blob. */
+  width: min(1640px, 96vw);
+  height: min(1280px, 94vh);
   display: flex;
   flex-direction: column;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
@@ -714,6 +720,17 @@
 }
 .icon-toggle.is-on:hover {
   background: #fbe0a8;
+}
+/* A locked object reads as red rather than the amber used for visibility --
+   locked means "this will not move", which is worth spotting at a glance in a
+   long object list. */
+.lock-toggle.is-on {
+  background: #fde2e2;
+  color: #c11919;
+  box-shadow: inset 0 0 0 1px #f3b4b4;
+}
+.lock-toggle.is-on:hover {
+  background: #fbcdcd;
 }
 .icon-pop {
   display: inline-block;

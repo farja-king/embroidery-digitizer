@@ -210,7 +210,10 @@ function boundsOf(obj: EmbObject) {
 // that applies once and reads back as 0, not a live absolute-angle display.
 function TransformFields({ obj, update }: { obj: EmbObject; update: (patch: Partial<EmbObject>) => void }) {
   const box = boundsOf(obj);
-  const [lockAspect, setLockAspect] = useState(false);
+  // On by default: resizing a digitized shape on one axis only is almost always
+  // a mistake -- it changes stitch density along that axis and distorts
+  // lettering. Unticking it is the deliberate act, not ticking it.
+  const [lockAspect, setLockAspect] = useState(true);
 
   // Start/end/guide anchors are absolute coordinates too, same as the outline
   // points -- without transforming them the same way, they're left behind at

@@ -60,7 +60,7 @@ export default function ObjectsPanel() {
                 </span>
               </button>
               <button
-                className={`icon-toggle ${o.locked ? 'is-on' : 'is-off'}`}
+                className={`icon-toggle lock-toggle ${o.locked ? 'is-on' : 'is-off'}`}
                 title={o.locked ? 'Unlock' : 'Lock'}
                 onClick={(e) => { e.stopPropagation(); dispatch({ type: 'UPDATE_OBJECT', id: o.id, patch: { locked: !o.locked } }); }}
               >

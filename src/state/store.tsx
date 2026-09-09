@@ -172,6 +172,11 @@ function optimizeStitchOrder(objects: EmbObject[]): EmbObject[] {
   return result;
 }
 
+// Exported so a caller can see what the reorder would do before dispatching it
+// -- the button reports the actual saving rather than silently rearranging a
+// list most people never look at.
+export const previewOptimizedOrder = optimizeStitchOrder;
+
 function bboxOf(o: EmbObject): { minX: number; minY: number; maxX: number; maxY: number } {
   const flat = flattenPath(o.points, o.kind === 'fill');
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
