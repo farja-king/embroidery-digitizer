@@ -235,16 +235,21 @@ export default function Canvas() {
   // own point order (see fill.startPoint/endPoint) -- everywhere the marker actually
   // *is* needs to agree, so this is the one place that decides it: the override
   // when set, else the outline's first/last point same as every other kind.
-  const getMarkerPositions = useCallback((obj: EmbObject): { start: Point; end: Point } | null => {
-    if (obj.points.length < 2) return null;
-    if (obj.kind === 'fill') {
-      return {
-        start: obj.fill.startPoint ?? obj.points[0],
-        end: obj.fill.endPoint ?? obj.points[obj.points.length - 1],
-      };
-    }
-    return { start: obj.points[0], end: obj.points[obj.points.length - 1] };
-  }, []);
+  const getMarkerPositions = useCallback(
+    (obj: EmbObject): { start: Point; end: Point; startIsExplicit: boolean; endIsExplicit: boolean } | null => {
+      if (obj.points.length < 2) return null;
+      if (obj.kind === 'fill') {
+        return {
+          start: obj.fill.startPoint ?? obj.points[0],
+          end: obj.fill.endPoint ?? obj.points[obj.points.length - 1],
+          startIsExplicit: obj.fill.startPoint != null,
+          endIsExplicit: obj.fill.endPoint != null,
+        };
+      }
+      return { start: obj.points[0], end: obj.points[obj.points.length - 1], startIsExplicit: true, endIsExplicit: true };
+    },
+    [],
+  );
 
   // The start/end markers (green/red dots) sit exactly on the object's own first
   // and last point, same as two of its vertex handles — hit-tested with the same
@@ -860,17 +865,31 @@ export default function Canvas() {
       if (markers) {
         const startPt = toScreen(markers.start);
         const endPt = toScreen(markers.end);
-        const drawMarker = (pt: Point, fill: string, hovered: boolean) => {
+        // A fill's start/end marker that hasn't actually been set yet (fill.startPoint/
+        // endPoint still null) renders at the outline's own first/last point as a
+        // fallback -- indistinguishable at a glance from a marker the user actually
+        // dragged there, which reads as "start is set at this corner" when really the
+        // engine still treats it as unset and falls back to a plain single scan
+        // instead of the two-region split technique. Drawn hollow (ring only, no
+        // fill) instead of solid to make that distinction visible.
+        const drawMarker = (pt: Point, color: string, hovered: boolean, isExplicit: boolean) => {
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, hovered ? 7 : 5.5, 0, Math.PI * 2);
-          ctx.fillStyle = fill;
-          ctx.fill();
-          ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = 1.5;
+          if (isExplicit) {
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.5;
+          } else {
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+          }
           ctx.stroke();
         };
-        drawMarker(endPt, '#c0392b', hoveredEndpoint === 'end');
-        drawMarker(startPt, '#2e9e4f', hoveredEndpoint === 'start');
+        drawMarker(endPt, '#c0392b', hoveredEndpoint === 'end', markers.endIsExplicit);
+        drawMarker(startPt, '#2e9e4f', hoveredEndpoint === 'start', markers.startIsExplicit);
       }
     }
 
