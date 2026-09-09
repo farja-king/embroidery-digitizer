@@ -772,20 +772,61 @@ function splitCellAtEndpoint(
   // Emits a list of rows in the given order, flipping each row so it starts at
   // whichever of its two ends is nearer where the thread already is. That keeps
   // the snake continuous no matter what order the rows are visited in.
-  const emit = (list: Point[][], from: Point | null): Point[] => {
+  const emit = (list: Point[][], from: Point | null, flipFirst: boolean | null = null): Point[] => {
     const out: Point[] = [];
     let cursor = from;
-    for (const row of list) {
+    for (let i = 0; i < list.length; i++) {
+      const row = list[i];
       const head = row[0];
       const tail = row[row.length - 1];
       const flip =
-        cursor !== null &&
-        Math.hypot(tail.x - cursor.x, tail.y - cursor.y) < Math.hypot(head.x - cursor.x, head.y - cursor.y);
+        i === 0 && flipFirst !== null
+          ? flipFirst
+          : cursor !== null &&
+            Math.hypot(tail.x - cursor.x, tail.y - cursor.y) < Math.hypot(head.x - cursor.x, head.y - cursor.y);
       const oriented = flip ? [...row].reverse() : row;
       out.push(...oriented);
       cursor = oriented[oriented.length - 1];
     }
     return out;
+  };
+  // Which way round the first row of a half runs decides which way round *every*
+  // row of it runs -- the snake alternates from there -- and so decides which
+  // side the half's last stitch lands on. Emitting greedily (nearest end first)
+  // keeps the entry tidy but is blind to where the half finishes, which is how a
+  // fill that covered correctly could still end up a full row-width away from
+  // the end marker and need a boundary walk to reach it. So generate both
+  // parities of each half and score whole routes: entry travel + the join
+  // between halves + the final hop to the marker. Same four-way parity search
+  // splitFillRows already does on a convex shape.
+  const bestRoute = (
+    halves: Point[][][],
+    from: Point | null,
+    target: Point,
+  ): Point[][] => {
+    let best: Point[][] | null = null;
+    let bestCost = Infinity;
+    const hop = (a: Point | null, b: Point | null) => (a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0);
+    const parities: (boolean | null)[] = [false, true];
+    const combos = halves.reduce<(boolean | null)[][]>(
+      (acc, _) => acc.flatMap((prefix) => parities.map((p) => [...prefix, p])),
+      [[]],
+    );
+    for (const combo of combos) {
+      const emitted: Point[][] = [];
+      let cursor = from;
+      let cost = 0;
+      for (let h = 0; h < halves.length; h++) {
+        if (!halves[h].length) { emitted.push([]); continue; }
+        const part = emit(halves[h], cursor, combo[h]);
+        cost += hop(cursor, part[0] ?? null);
+        emitted.push(part);
+        cursor = part[part.length - 1] ?? cursor;
+      }
+      cost += hop(cursor, target);
+      if (cost < bestCost) { bestCost = cost; best = emitted; }
+    }
+    return best ?? halves.map((h) => emit(h, from));
   };
   const join = (a: Point[], b: Point[]): Point[] => {
     if (!a.length || !b.length) return [...a, ...b];
@@ -816,15 +857,15 @@ function splitCellAtEndpoint(
     if (!arrivesLow) order.reverse();
     const outbound = order.filter((_, k) => k % 2 === 0).map((i) => rows[i]);
     const inbound = order.filter((_, k) => k % 2 === 1).reverse().map((i) => rows[i]);
-    const first = emit(outbound, arriveFrom);
-    return join(first, emit(inbound, first[first.length - 1] ?? null));
+    const [first, second] = bestRoute([outbound, inbound], arriveFrom, endPoint);
+    return join(first, second);
   }
 
   // Finish is at the opposite end from the start: a plain snake straight through
   // already ends in the right place.
   if (endNearLow || endNearHigh) {
     const order = endNearHigh ? rows : [...rows].reverse();
-    return emit(order, arriveFrom);
+    return bestRoute([order], arriveFrom, endPoint)[0];
   }
 
   // Finish is somewhere in the middle: fill up to its row from the side the
@@ -835,9 +876,8 @@ function splitCellAtEndpoint(
   if (splitRow >= rows.length) splitRow = rows.length - 1;
   const near = rows.slice(0, splitRow);
   const far = rows.slice(splitRow);
-  const firstHalf = arrivesLow ? emit(near, arriveFrom) : emit([...far].reverse(), arriveFrom);
-  const cursor = firstHalf[firstHalf.length - 1] ?? null;
-  const secondHalf = arrivesLow ? emit([...far].reverse(), cursor) : emit(near, cursor);
+  const halves = arrivesLow ? [near, [...far].reverse()] : [[...far].reverse(), near];
+  const [firstHalf, secondHalf] = bestRoute(halves, arriveFrom, endPoint);
   return join(firstHalf, secondHalf);
 }
 

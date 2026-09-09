@@ -206,15 +206,15 @@ export function fillUnderlay(polygon: Point[], topAngle: number, settings: Under
   if (type === 'none' || polygon.length < 3) return [];
   const inset = offsetPolygon(polygon, -UNDERLAY_INSET_MM);
   const spacing = settings.spacing;
-  // The perpendicular ("cross-grain") direction is standard practice on a convex
-  // shape, but on a concave one (two lobes joined by a narrow waist, a staircase,
-  // an L) a fixed perpendicular angle can run straight across the waist on nearly
-  // every row -- reading as long, repeated "runs up and down the height" rather
-  // than staying within each lobe, since it has no way to know the shape bends.
-  // Falling back to the top angle itself avoids that: it's the same direction the
-  // (already concave-aware, see isConvexPolygon in fillStitches) top stitching
-  // itself uses, which naturally follows the shape instead of cutting across it.
-  const perpAngle = isConvexPolygon(polygon) ? topAngle + 90 : topAngle;
+  // Underlay runs across the grain of the top stitching -- that's the whole point
+  // of it, and it's what every digitizer (and Hatch) does: rows perpendicular to
+  // the fill so the top layer is supported against the direction it pulls. This
+  // used to fall back to the top angle itself on a concave shape, because a fixed
+  // perpendicular angle there produced endless short boundary detours; that was a
+  // workaround for row-by-row bridging, and connectedRegionRows' cell
+  // decomposition removed the reason for it, so the standard cross-grain
+  // direction applies everywhere again.
+  const perpAngle = topAngle + 90;
   switch (type) {
     case 'center-run':
       return centerRun(entryPoint ? rotateToNearest(inset, entryPoint) : inset, true, spacing);
@@ -245,22 +245,18 @@ export function fillUnderlay(polygon: Point[], topAngle: number, settings: Under
       // block bridgeRowGaps exists to route along the boundary instead.
       return isConvexPolygon(polygon)
         ? bridgeRowGaps(tatamiRows(inset, perpAngle, spacing, spacing * 1.5), inset, spacing * 4, spacing)
-        : bridgeRowGaps(regionChainRows(inset, topAngle, spacing, spacing * 1.5, entryPoint, spacing), inset, spacing * 4, spacing);
+        : bridgeRowGaps(regionChainRows(inset, perpAngle, spacing, spacing * 1.5, entryPoint, spacing), inset, spacing * 4, spacing);
     case 'double-tatami': {
       // One pass perpendicular to the top stitching, one parallel to it -- a crossed
       // grid (horizontal one way, vertical the other), not the same direction twice.
-      // On a concave shape perpAngle already collapses to topAngle (see above), so
-      // passA and passB would otherwise duplicate the same rows -- phase-shifted by
-      // half a row instead in that case, so "double" still means real extra coverage
-      // rather than literally re-stitching the same lines twice. passA also goes
-      // through regionChainRows on a concave shape, same reasoning as the plain
-      // 'tatami' case above.
-      const passA = isConvexPolygon(polygon)
-        ? tatamiRows(inset, perpAngle, spacing, spacing * 1.5)
-        : bridgeRowGaps(regionChainRows(inset, perpAngle, spacing, spacing * 1.5, entryPoint, spacing), inset, spacing * 4, spacing);
-      const passB = isConvexPolygon(polygon)
-        ? tatamiRows(inset, topAngle, spacing, spacing * 1.5)
-        : tatamiRows(inset, topAngle, spacing, spacing * 1.5, undefined, spacing / 2);
+      // Both passes go through regionChainRows on a concave shape, same reasoning as
+      // the plain 'tatami' case above.
+      const rows = (a: number) =>
+        isConvexPolygon(polygon)
+          ? tatamiRows(inset, a, spacing, spacing * 1.5)
+          : bridgeRowGaps(regionChainRows(inset, a, spacing, spacing * 1.5, entryPoint, spacing), inset, spacing * 4, spacing);
+      const passA = rows(perpAngle);
+      const passB = rows(topAngle);
       const combined = [...edgeRunFill(inset, spacing, entryPoint), ...passA, ...passB];
       return bridgeRowGaps(combined, inset, spacing * 4, spacing);
     }

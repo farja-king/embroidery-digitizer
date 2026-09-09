@@ -363,9 +363,22 @@ function fillStitches(
   // shape's start, say), bridge there along the shape's own edge instead of leaving
   // it wherever the scan stopped, so buildPattern's jump from here is short and
   // deliberate rather than a straight line back across the shape's interior.
+  // A perimeter bridge is the right answer when the scan genuinely ends somewhere
+  // else in the shape, but it is the wrong answer for the last millimetre. The
+  // routing above already aims the final row at the marker, so what is usually
+  // left is a fraction of a row's width -- and if that tiny gap straddles a
+  // concave vertex (the tip of a notch, say), walking the outline "the shorter
+  // way" round can still mean most of the perimeter to close a sub-millimetre
+  // gap. That is precisely the long walk back to the end point this whole
+  // routing exists to avoid, reintroduced at the very last stitch. Anything
+  // within a row's reach is closed by stitching straight to the marker instead:
+  // it is shorter than a single ordinary stitch and lands under the fill.
   const lastRowPoint = rows[rows.length - 1];
   if (endPoint && lastRowPoint && (Math.abs(lastRowPoint.x - endPoint.x) > 0.05 || Math.abs(lastRowPoint.y - endPoint.y) > 0.05)) {
-    for (const p of bridge(expanded, lastRowPoint, endPoint, step)) {
+    const gap = Math.hypot(lastRowPoint.x - endPoint.x, lastRowPoint.y - endPoint.y);
+    const direct = gap <= Math.max(rowSpacing * 2, stitchLength);
+    const path = direct ? [endPoint] : bridge(expanded, lastRowPoint, endPoint, step);
+    for (const p of path) {
       out.push({ x: p.x, y: p.y, command: 'STITCH' });
     }
   }
