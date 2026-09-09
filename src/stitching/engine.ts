@@ -1,5 +1,5 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { bridgeRowGaps, centroid, flattenPath, guidedFillRows, isConvexPolygon, normalAt, offsetPolygon, pathLength, perimeterBridge, regionChainRows, resamplePath, rotatePoint, straightBridge, tatamiRows } from './geometry';
+import { bridgeRowGaps, centroid, flattenPath, guidedFillRows, isConvexPolygon, normalAt, offsetPolygon, offsetPolygonAlong, pathLength, perimeterBridge, regionChainRows, resamplePath, rotatePoint, straightBridge, tatamiRows } from './geometry';
 import { autoUnderlayType, fillUnderlay, normalizeUnderlay, satinUnderlay } from './underlay';
 
 /** Covers the whole `[shapeMinY, shapeMaxY]` range as two interleaved passes at
@@ -277,11 +277,20 @@ function fillStitches(
     ? (_shape: Point[], from: Point, to: Point, step: number) => straightBridge(from, to, step)
     : perimeterBridge;
   const out: StitchPoint[] = [];
-  // Dense fill stitching pulls the fabric in toward the shape's center, so the top
-  // layer is generated slightly past the digitized outline to come out true-to-size
-  // on fabric — the underlay above deliberately stays on the original boundary
-  // (actually inset from it), so it can never poke out past this expanded edge.
-  const expanded = offsetPolygon(polygon, Math.max(0, pullCompensation));
+  // Dense fill stitching draws the fabric in along the line of the stitches — a
+  // row of tatami pulls its own two ends toward each other — so the top layer is
+  // generated with every row lengthened at both ends to come out true-to-size on
+  // fabric. Only along the rows: nothing spans across them to pull that way, and
+  // growing the outline uniformly (what this used to do) overshoots across the
+  // grain where there was no pull to correct. The underlay deliberately stays on
+  // the original boundary (actually inset from it), so it can never poke out past
+  // this edge. A guided fill's rows follow the guide's own bend rather than one
+  // fixed angle, so there is no single direction to extend along — it keeps the
+  // uniform offset.
+  const comp = Math.max(0, pullCompensation);
+  const expanded = guideLine && guideLine.length >= 2
+    ? offsetPolygon(polygon, comp)
+    : offsetPolygonAlong(polygon, comp, angle);
   const step = Math.max(0.4, stitchLength);
   let rows: Point[];
   if (guideLine && guideLine.length >= 2) {

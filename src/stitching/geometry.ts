@@ -116,39 +116,118 @@ export function centroid(points: Point[]): Point {
  * ~0.71x the requested amount). Capped so a very acute corner doesn't spike out
  * absurdly far, standard practice for polygon offsetting. Not arc-accurate on
  * sharp corners, but adequate at the scale this is actually used for (pull
- * compensation, underlay inset). Direction is resolved against the centroid
- * rather than assumed from winding order, since a polygon drawn by clicking
- * points can wind either way. */
+ * compensation, underlay inset). Direction comes from the loop's winding, so a
+ * polygon drawn by clicking points either way round still offsets outward. */
 export function offsetPolygon(polygon: Point[], amount: number): Point[] {
   if (Math.abs(amount) < 1e-9 || polygon.length < 3) return polygon;
   const n = polygon.length;
-  const c = centroid(polygon);
-  const unitNormal = (a: Point, b: Point): Point => {
+
+  // Which way is "out" comes from the loop's winding, not from where the
+  // centroid happens to sit. Testing each vertex's normal against (vertex -
+  // centroid) is only reliable on a shape the centroid is safely inside and
+  // that is roughly star-shaped about it. On anything genuinely concave it
+  // fails: on a "Pac-Man" the centroid sits near the mouth, so vertices along
+  // the mouth's own edges got their offset flipped and the boundary was pulled
+  // *inward* there -- which is why raising pull compensation on that shape
+  // added coverage on one side while taking it away on the other instead of
+  // growing the shape. Winding is a global property of the loop and gives the
+  // same, correct answer at every vertex.
+  let signed = 0;
+  for (let i = 0; i < n; i++) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % n];
+    signed += a.x * b.y - b.x * a.y;
+  }
+  const wind = signed >= 0 ? 1 : -1;
+  const unitNormal = (a: Point, b: Point): Point | null => {
     const dx = b.x - a.x;
     const dy = b.y - a.y;
-    const len = Math.hypot(dx, dy) || 1;
-    return { x: -dy / len, y: dx / len };
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-9) return null;
+    return { x: (dy / len) * wind, y: (-dx / len) * wind };
+  };
+  // A closed loop is usually handed to us with its first point repeated at the
+  // end (flattenPath does exactly that), so a vertex's immediate neighbour can
+  // be the same point -- a zero-length edge with no normal at all. Taking that
+  // degenerate normal as (0,0) collapsed the bisector onto a single edge and
+  // drove the miter cap to its maximum, spiking that one vertex out by four
+  // times the offset: a visible spike at the seam, always at the same place on
+  // the outline. Step over duplicates to the nearest genuinely different point
+  // instead.
+  const stepTo = (i: number, dir: 1 | -1): Point => {
+    for (let k = 1; k < n; k++) {
+      const q = polygon[(i + dir * k + n * n) % n];
+      if (Math.hypot(q.x - polygon[i].x, q.y - polygon[i].y) > 1e-9) return q;
+    }
+    return polygon[i];
   };
   return polygon.map((p, i) => {
-    const prev = polygon[(i - 1 + n) % n];
-    const next = polygon[(i + 1) % n];
-    const n1 = unitNormal(prev, p);
-    const n2 = unitNormal(p, next);
-    let bx = n1.x + n2.x;
-    let by = n1.y + n2.y;
-    const blen = Math.hypot(bx, by) || 1;
+    const n1 = unitNormal(stepTo(i, -1), p);
+    const n2 = unitNormal(p, stepTo(i, 1));
+    const a = n1 ?? n2;
+    const b = n2 ?? n1;
+    if (!a || !b) return p;
+    let bx = a.x + b.x;
+    let by = a.y + b.y;
+    const blen = Math.hypot(bx, by);
+    if (blen < 1e-9) return p; // a perfect spike back on itself: leave it alone
     bx /= blen;
     by /= blen;
-    const cosHalfAngle = bx * n1.x + by * n1.y; // bisector·n1 = cos(half the angle between n1,n2)
-    const miterScale = Math.min(4, 1 / Math.max(0.25, cosHalfAngle));
-    let nx = bx * miterScale;
-    let ny = by * miterScale;
-    const toVertex = { x: p.x - c.x, y: p.y - c.y };
-    if (nx * toVertex.x + ny * toVertex.y < 0) {
-      nx = -nx;
-      ny = -ny;
+    // Miter length grows as 1/cos(half-angle) and runs away at a sharp corner.
+    // Cap at 2 (the usual join limit) rather than 4 -- past that the corner is
+    // sharp enough that a long spike is more wrong than a slightly blunt point.
+    const cosHalfAngle = bx * a.x + by * a.y;
+    const miterScale = Math.min(2, 1 / Math.max(0.5, cosHalfAngle));
+    return { x: p.x + bx * miterScale * amount, y: p.y + by * miterScale * amount };
+  });
+}
+
+/** Pushes a closed polygon's boundary outward by `amount`, but only along the
+ * single direction `angle` (degrees) -- the fill's own row direction.
+ *
+ * This is what pull compensation on a fill physically is. Dense stitching draws
+ * the fabric in *along the line of the stitches*: a row of tatami pulls its two
+ * ends toward each other, and the shape comes off the machine short in that
+ * direction. It does not pull across the rows, because nothing spans that way
+ * except the tiny step between one row and the next. The fix a digitizer applies
+ * is to lengthen every row at both ends, which is exactly this: every boundary
+ * point on the left of the shape moves left by `amount`, every point on the
+ * right moves right by the same, and the shape's extent across the rows is left
+ * untouched.
+ *
+ * Offsetting the whole outline uniformly instead (what this used to do) makes
+ * the shape bigger in every direction, which overshoots across the grain where
+ * there was no pull to correct in the first place. */
+export function offsetPolygonAlong(polygon: Point[], amount: number, angle: number): Point[] {
+  if (Math.abs(amount) < 1e-9 || polygon.length < 3) return polygon;
+  const rad = (angle * Math.PI) / 180;
+  const ux = Math.cos(rad);
+  const uy = Math.sin(rad);
+  // Reuse the offset above purely to learn which way is out at each vertex: the
+  // displacement it produces already points outward, so its component along the
+  // row direction tells us which end of that row this vertex sits at.
+  const probe = offsetPolygon(polygon, 1);
+  return polygon.map((p, i) => {
+    const along = (probe[i].x - p.x) * ux + (probe[i].y - p.y) * uy;
+    if (Math.abs(along) < 1e-9) return p; // exactly at a row's extreme: no end to extend
+    const sign = along > 0 ? 1 : -1;
+    // Extending a row end pushes out of the shape, which is the point. But where
+    // the shape has an opening narrower than twice the compensation -- the tip of
+    // a "Pac-Man" mouth, the gap of a "C" -- the two sides reach past each other
+    // and the opening closes, so rows get stitched straight across what should be
+    // bare fabric. Walk the displacement and stop short of re-entering the shape
+    // on the far side of a gap, leaving a little of it open.
+    const steps = 6;
+    let allowed = amount;
+    for (let s = 1; s <= steps; s++) {
+      const d = (s / steps) * amount;
+      const q = { x: p.x + ux * sign * d, y: p.y + uy * sign * d };
+      if (pointInPolygon(q, polygon) && distanceToPolyline(q, polygon, true) > 1e-3) {
+        allowed = ((s - 1) / steps) * amount * 0.8;
+        break;
+      }
     }
-    return { x: p.x + nx * amount, y: p.y + ny * amount };
+    return { x: p.x + ux * sign * allowed, y: p.y + uy * sign * allowed };
   });
 }
 
@@ -241,22 +320,84 @@ export function straightBridge(from: Point, to: Point, step: number): Point[] {
   return resamplePath([from, to], Math.max(0.2, step)).slice(1);
 }
 
+/** True when the straight line from `a` to `b` leaves `polygon` by more than a
+ * hair. Depth matters, not mere containment: a straight hop between two points
+ * on a *curved* boundary is a chord, and a chord always sits slightly outside a
+ * boundary bowing away from it -- hundredths of a millimetre over a few
+ * millimetres. Only a line genuinely crossing open fabric leaves by a visible
+ * amount. */
+function crossesOutside(polygon: Point[], a: Point, b: Point, toleranceMm = 0.35): boolean {
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  const samples = Math.min(24, Math.max(2, Math.ceil(len / 0.5)));
+  for (let s = 1; s < samples; s++) {
+    const t = s / samples;
+    const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    if (pointInPolygon(p, polygon)) continue;
+    if (distanceToPolyline(p, polygon, true) > toleranceMm) return true;
+  }
+  return false;
+}
+
+/** Travel between two points inside a shape, choosing between walking the
+ * outline and cutting straight across.
+ *
+ * Walking the outline is the right default and stays the default: it keeps
+ * travel stitches under where the fill itself will cover them, instead of
+ * leaving a line lying over finished stitching. But it is only sensible while
+ * the two routes are comparable in length. Around an opening -- a "Pac-Man"
+ * mouth, the gap of a "C" -- two points a couple of millimetres apart across the
+ * gap are most of the perimeter apart along the outline, so an outline-only rule
+ * sends the thread round the entire shape to move a few millimetres, over and
+ * over, once per row. That is the round-and-across-and-round-again crawl seen on
+ * exactly those shapes.
+ *
+ * So: cut straight only when the straight line stays inside the shape *and* the
+ * outline route is meaningfully longer. On a convex shape the two routes between
+ * adjacent row ends are always comparable, so the outline keeps winning and
+ * nothing there changes.
+ *
+ * Hatch's own Pac-Man export routes its fill with 0.6% of the thread spent on
+ * travel and two detours in the whole shape, and that travel runs *inside* the
+ * outline rather than around it -- so the interior route deserves to win
+ * whenever it is clearly shorter, not only when the outline route is absurd. */
+export function shortestBridge(polygon: Point[], from: Point, to: Point, step: number, detourRatio = 1.5): Point[] {
+  const around = perimeterBridge(polygon, from, to, step);
+  const direct = Math.hypot(to.x - from.x, to.y - from.y);
+  if (direct < 1e-9) return around;
+  if (pathLength(around) <= direct * detourRatio) return around;
+  if (crossesOutside(polygon, from, to)) return around;
+  return straightBridge(from, to, step);
+}
+
 /** Fixes up a scanline row-fill's raw output for concave shapes: a single scan row
  * can have more than one disconnected span (e.g. both arms of an L, or either side
  * of a star's notch), and consecutive spans get concatenated directly with no
  * awareness that the straight line between them cuts outside the polygon, across
- * open space. Any consecutive pair further apart than `maxGap` gets routed along
- * the polygon's own boundary instead (same `perimeterBridge` reasoning used for
- * every other bridge in this fill engine), so what would otherwise be one long
- * stray straight stitch across a notch instead hugs the actual outline. */
+ * open space. Such a pair gets routed along the polygon's own boundary instead
+ * (same `perimeterBridge` reasoning used for every other bridge in this fill
+ * engine), so what would otherwise be one long stray straight stitch across a
+ * notch instead hugs the actual outline.
+ *
+ * Whether the line leaves the shape is now actually tested, not inferred from
+ * its length. Length alone is a poor proxy: `maxGap` has to stay well above a
+ * normal row-to-row step, which leaves a band of gaps that are short enough to
+ * pass the test yet still cross open fabric. On a shape with a narrow opening --
+ * a "Pac-Man" mouth, the gap of a "C" -- consecutive rows on either side of the
+ * opening sit only a few millimetres apart near its tip, so those hops sailed
+ * through as plain straight stitches lying right across the opening. The length
+ * check is kept as a cheap first filter (anything under one resample step is a
+ * stitch within a row and cannot have left the shape) and as a backstop for very
+ * long hops, but a gap that leaves the polygon is bridged however short it is. */
 export function bridgeRowGaps(points: Point[], polygon: Point[], maxGap: number, step: number): Point[] {
   if (points.length < 2) return points;
+  const within = Math.max(0.2, step) * 1.05;
   const out: Point[] = [points[0]];
   for (let i = 1; i < points.length; i++) {
     const prev = points[i - 1];
     const cur = points[i];
-    if (Math.hypot(cur.x - prev.x, cur.y - prev.y) > maxGap) {
-      out.push(...perimeterBridge(polygon, prev, cur, step));
+    const d = Math.hypot(cur.x - prev.x, cur.y - prev.y);
+    if (d > maxGap || (d > within && crossesOutside(polygon, prev, cur))) {
+      out.push(...shortestBridge(polygon, prev, cur, step));
     } else {
       out.push(cur);
     }
@@ -340,28 +481,60 @@ export function polygonArea(points: Point[]): number {
  * flattening, etc.) that's completely invisible on screen but still technically
  * breaks a zero-tolerance convexity test, silently routing a shape that's
  * functionally a rectangle through the concave-only fallback path instead of
- * the convex-only split technique it actually needs. */
+ * the convex-only split technique it actually needs.
+ *
+ * A distance tolerance cannot express that, though, whatever it is measured
+ * over. A shape with curved sides arrives here already flattened into a dense
+ * polyline -- sixteen samples per segment, so neighbouring points sit a fraction
+ * of a millimetre apart -- and each individual step around a gentle curve
+ * deviates from straight by a few hundredths of a millimetre. Set the tolerance
+ * low enough to see that and an invisible wobble trips it; set it high enough to
+ * ignore the wobble and it also ignores the curve, so a "C" or a crescent
+ * measured a turn nowhere and came back convex. Those shapes were then run
+ * through the convex-only paths: one continuous scan straight across the
+ * opening, no cell decomposition, no boundary-aware travel.
+ *
+ * Accumulated turning has no such conflict, because it is the *total* that
+ * matters rather than any single step. Walking a simple closed outline turns
+ * through a full circle overall; on a convex one every step of that turn is in
+ * the same direction, while a concavity is turning the other way. So sum the
+ * turn the wrong way round and compare it against a threshold: an invisible
+ * wobble on a rectangle turns back by a degree or two, a real notch or the inner
+ * sweep of a "C" by tens or hundreds of degrees. Nothing here depends on how
+ * finely the outline happens to be sampled, which is what made the distance
+ * tolerance so awkward to pitch. */
 export function isConvexPolygon(points: Point[]): boolean {
   const n = points.length;
   if (n < 4) return true;
-  const TOLERANCE_MM = 0.5;
-  let sign = 0;
+  // ~20 degrees of turning the wrong way. An L's notch is 90, a "C" is hundreds;
+  // a sub-millimetre wobble along a 10mm edge is under 2.
+  const REVERSE_TURN_LIMIT = 0.35;
+
+  const dir = (a: Point, b: Point): number | null => {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    return Math.hypot(dx, dy) < 1e-9 ? null : Math.atan2(dy, dx);
+  };
+  // Edge directions, skipping any zero-length segment (a closed loop usually
+  // arrives with its first point repeated at the end).
+  const dirs: number[] = [];
   for (let i = 0; i < n; i++) {
-    const a = points[i];
-    const b = points[(i + 1) % n];
-    const c = points[(i + 2) % n];
-    const lineLen = Math.hypot(c.x - a.x, c.y - a.y);
-    if (lineLen > 1e-9) {
-      const dist = Math.abs((c.x - a.x) * (a.y - b.y) - (a.x - b.x) * (c.y - a.y)) / lineLen;
-      if (dist < TOLERANCE_MM) continue;
-    }
-    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
-    if (Math.abs(cross) < 1e-9) continue;
-    const s = cross > 0 ? 1 : -1;
-    if (sign === 0) sign = s;
-    else if (s !== sign) return false;
+    const d = dir(points[i], points[(i + 1) % n]);
+    if (d !== null) dirs.push(d);
   }
-  return true;
+  if (dirs.length < 3) return true;
+
+  let turnedLeft = 0;
+  let turnedRight = 0;
+  for (let i = 0; i < dirs.length; i++) {
+    let t = dirs[(i + 1) % dirs.length] - dirs[i];
+    while (t > Math.PI) t -= Math.PI * 2;
+    while (t < -Math.PI) t += Math.PI * 2;
+    if (Math.abs(t) < 1e-6) continue;
+    if (t > 0) turnedLeft += t;
+    else turnedRight -= t;
+  }
+  return Math.min(turnedLeft, turnedRight) < REVERSE_TURN_LIMIT;
 }
 
 /**
@@ -713,7 +886,7 @@ export function regionChainRows(
     if (current) {
       const first = block[0];
       if (Math.abs(current.x - first.x) > 0.05 || Math.abs(current.y - first.y) > 0.05) {
-        out.push(...perimeterBridge(polygon, current, first, step));
+        out.push(...shortestBridge(polygon, current, first, step));
       }
     }
     out.push(...block);
@@ -725,7 +898,7 @@ export function regionChainRows(
     if (current && tail.length) {
       const first = tail[0];
       if (Math.abs(current.x - first.x) > 0.05 || Math.abs(current.y - first.y) > 0.05) {
-        out.push(...perimeterBridge(polygon, current, first, step));
+        out.push(...shortestBridge(polygon, current, first, step));
       }
     }
     out.push(...tail);
@@ -834,7 +1007,7 @@ function splitCellAtEndpoint(
     const to = b[0];
     const bridge =
       Math.abs(from.x - to.x) > 0.05 || Math.abs(from.y - to.y) > 0.05
-        ? perimeterBridge(polygon, from, to, step)
+        ? shortestBridge(polygon, from, to, step)
         : [];
     return [...a, ...bridge, ...b];
   };

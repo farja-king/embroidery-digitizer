@@ -206,15 +206,18 @@ export function fillUnderlay(polygon: Point[], topAngle: number, settings: Under
   if (type === 'none' || polygon.length < 3) return [];
   const inset = offsetPolygon(polygon, -UNDERLAY_INSET_MM);
   const spacing = settings.spacing;
-  // Underlay runs across the grain of the top stitching -- that's the whole point
-  // of it, and it's what every digitizer (and Hatch) does: rows perpendicular to
-  // the fill so the top layer is supported against the direction it pulls. This
-  // used to fall back to the top angle itself on a concave shape, because a fixed
-  // perpendicular angle there produced endless short boundary detours; that was a
-  // workaround for row-by-row bridging, and connectedRegionRows' cell
-  // decomposition removed the reason for it, so the standard cross-grain
-  // direction applies everywhere again.
-  const perpAngle = topAngle + 90;
+  // Underlay runs across the grain of the top stitching so the top layer is
+  // supported against the direction it pulls. Not perpendicular, though: 45 deg.
+  // That is measured from Hatch's own output rather than assumed -- decoding the
+  // per-pass dominant stitch direction in two separate Hatch exports covering
+  // four shapes (square, circle, "E", "Pac-Man") gives underlay at 20 deg against
+  // a 155 deg fill in one file and 30 deg against a 165 deg fill in the other.
+  // Both are 45 deg off, and none is perpendicular. It makes sense: a
+  // perpendicular underlay shares its direction with nothing, whereas at 45 deg
+  // each underlay row crosses every top row at a slant, so the top stitching is
+  // anchored along its length rather than only where the two grids happen to
+  // meet square.
+  const perpAngle = topAngle + 45;
   switch (type) {
     case 'center-run':
       return centerRun(entryPoint ? rotateToNearest(inset, entryPoint) : inset, true, spacing);
