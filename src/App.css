@@ -873,3 +873,48 @@
 .underlay-auto-note {
   margin: 0;
 }
+
+/* Text tool: the font/size picker that appears beside the tool strip while the
+   text tool is active. Floats over the canvas rather than taking permanent
+   layout space, since it is only relevant while typing. */
+.text-toolbar {
+  position: absolute;
+  top: 26px;
+  left: 12px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1);
+  font-size: 12px;
+}
+.text-toolbar-font {
+  max-width: 190px;
+}
+.text-toolbar-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted);
+}
+.text-toolbar-size input {
+  width: 58px;
+}
+.text-toolbar-upload {
+  cursor: pointer;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  line-height: 1.4;
+}
+.text-toolbar-upload:hover {
+  background: #f2efe6;
+}
+.text-toolbar-hint {
+  color: var(--muted);
+  white-space: nowrap;
+}

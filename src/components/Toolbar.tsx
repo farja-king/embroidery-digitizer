@@ -11,6 +11,7 @@ const TOOLS: { id: ToolId; label: string; hint: string }[] = [
   { id: 'fill', label: '◆', hint: 'Fill (tatami)' },
   { id: 'rect', label: '▭', hint: 'Rectangle fill' },
   { id: 'ellipse', label: '◯', hint: 'Ellipse fill' },
+  { id: 'text', label: 'T', hint: 'Text — click in the hoop and type' },
 ];
 
 const SWATCHES = [
@@ -49,7 +50,7 @@ export default function Toolbar() {
           {t.label}
         </button>
       ))}
-      <button className="tool-btn" title="Add text" onClick={() => setShowText(true)}>
+      <button className="tool-btn" title="Add text from a dialog (font, size and stitch type in one place)" onClick={() => setShowText(true)}>
         🔤
       </button>
       <div className="toolbar-sep" />

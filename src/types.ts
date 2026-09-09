@@ -21,7 +21,7 @@ export interface RGB {
 }
 
 export type StitchKind = 'running' | 'satin' | 'fill';
-export type ToolId = 'select' | 'running' | 'satin' | 'fill' | 'rect' | 'ellipse';
+export type ToolId = 'select' | 'running' | 'satin' | 'fill' | 'rect' | 'ellipse' | 'text';
 
 export interface RunningParams {
   stitchLength: number; // mm

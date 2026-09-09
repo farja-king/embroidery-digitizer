@@ -14,13 +14,14 @@ import { useStore } from '../state/store';
 import type { RGB } from '../types';
 
 export default function TextModal({ color, onClose }: { color: RGB; onClose: () => void }) {
-  const { doc, dispatch, setSelectedIds } = useStore();
+  const { dispatch, setSelectedIds } = useStore();
   const [fonts, setFonts] = useState<FontEntry[]>(() => getCachedFontEntries());
   const [selectedKey, setSelectedKey] = useState<string>('');
   const [text, setText] = useState('Text');
   const [sizeMm, setSizeMm] = useState(20);
-  const [x, setX] = useState(Math.round(doc.hoop.width / 2 - 20));
-  const [y, setY] = useState(Math.round(doc.hoop.height / 2));
+  // No X/Y fields: text from this dialog lands in the middle of the hoop and is
+  // dragged from there, and the text tool types wherever you click. Two ways to
+  // set a position, neither of them a pair of numbers to work out by hand.
   const [stitchStyle, setStitchStyle] = useState<'satin-auto' | 'fill'>('satin-auto');
   const [loadingFonts, setLoadingFonts] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,7 +95,19 @@ export default function TextModal({ color, onClose }: { color: RGB; onClose: () 
     setError(null);
     try {
       const font = await selectedFont.load();
-      const objects = textToObjects({ text, font, sizeMm, x, y, color, stitchStyle });
+      // Roughly centred: textToObjects lays out from a baseline start point, so
+      // back off by half the string's drawn width and drop the baseline by
+      // about half a cap height.
+      const advance = font.getAdvanceWidth(text, sizeMm);
+      const objects = textToObjects({
+        text,
+        font,
+        sizeMm,
+        x: -advance / 2,
+        y: sizeMm * 0.35,
+        color,
+        stitchStyle,
+      });
       if (objects.length === 0) {
         setError('That text produced no stitchable shapes (font may be missing those glyphs).');
         return;
@@ -176,16 +189,6 @@ export default function TextModal({ color, onClose }: { color: RGB; onClose: () 
           <label style={{ flex: 1 }}>
             Size (mm)
             <input type="number" min={2} max={300} step={0.5} value={sizeMm} onChange={(e) => setSizeMm(Number(e.target.value))} />
-          </label>
-        </div>
-        <div className="field row">
-          <label style={{ flex: 1 }}>
-            X (mm)
-            <input type="number" value={x} onChange={(e) => setX(Number(e.target.value))} />
-          </label>
-          <label style={{ flex: 1 }}>
-            Y (mm)
-            <input type="number" value={y} onChange={(e) => setY(Number(e.target.value))} />
           </label>
         </div>
 

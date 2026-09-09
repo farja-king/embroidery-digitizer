@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, defaultObject, makeId, transformFillAnchors } from '../state/store';
+import { textToObjects } from '../text/textToObjects';
+import { useLoadedFont, useTextFonts } from '../text/useTextFonts';
+import TextToolBar from './TextToolBar';
 import type { EmbObject, FillParams, PathPoint, Point } from '../types';
 import { buildPattern, generateObjectStitches, type StitchPoint } from '../stitching/engine';
 import { distanceToPolyline, distanceToSegment, flattenPath, pointInPolygon, rotatePoint } from '../stitching/geometry';
@@ -231,7 +234,7 @@ function rgbCss(c: { r: number; g: number; b: number }): string {
 }
 
 export default function Canvas() {
-  const { doc, dispatch, undo, redo, selectedId, setSelectedId, selectedIds, setSelectedIds, tool, activeColor, guideLineFor, setGuideLineFor } = useStore();
+  const { doc, dispatch, undo, redo, selectedId, setSelectedId, selectedIds, setSelectedIds, tool, activeColor, guideLineFor, setGuideLineFor, textFontKey, textSizeMm, textStitchStyle } = useStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ scale: 3.5, panX: 0, panY: 0 });
@@ -245,6 +248,31 @@ export default function Canvas() {
   const spaceDownRef = useRef(false);
   const [bgImg, setBgImg] = useState<HTMLImageElement | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  // Where the caret sits and what has been typed so far. Non-null means a
+  // typing session is live: keystrokes go to it rather than to the shortcuts.
+  const [typing, setTyping] = useState<{ x: number; y: number; value: string } | null>(null);
+  const fontState = useTextFonts();
+  const activeFont = useLoadedFont(textFontKey, fontState.fonts);
+
+  // The letters are rebuilt from the font outlines on every keystroke, so what
+  // is on the canvas while typing is exactly what gets committed -- no separate
+  // preview representation that could drift from the real thing.
+  const typedObjects = useMemo(() => {
+    if (!typing || !activeFont || !typing.value) return [];
+    try {
+      return textToObjects({
+        text: typing.value,
+        font: activeFont,
+        sizeMm: textSizeMm,
+        x: typing.x,
+        y: typing.y,
+        color: activeColor,
+        stitchStyle: textStitchStyle,
+      });
+    } catch {
+      return [];
+    }
+  }, [typing, activeFont, textSizeMm, activeColor, textStitchStyle]);
   const dragRef = useRef<
     | { kind: 'pan'; startPx: Point; startPan: Point }
     | { kind: 'move-object'; id: string; startMm: Point; original: PathPoint[]; originalFill: FillParams | null }
@@ -499,6 +527,14 @@ export default function Canvas() {
     [drawingPoints, tool, activeColor, dispatch, setSelectedId, guideLineFor, setGuideLineFor, doc.objects],
   );
 
+  const commitTyping = useCallback(() => {
+    if (typedObjects.length > 0) {
+      dispatch({ type: 'ADD_OBJECTS', objects: typedObjects });
+      setSelectedIds(typedObjects.map((o) => o.id));
+    }
+    setTyping(null);
+  }, [typedObjects, dispatch, setSelectedIds]);
+
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current!.getBoundingClientRect();
     const px = e.clientX - rect.left;
@@ -660,6 +696,14 @@ export default function Canvas() {
       setSelectedIds([]);
       // empty space in select mode: drag to marquee-select multiple objects
       dragRef.current = { kind: 'marquee', corner: p };
+      return;
+    }
+
+    if (tool === 'text') {
+      // Clicking elsewhere while typing finishes the current word and starts a
+      // fresh one at the new spot, which is how every other text tool behaves.
+      if (typing) commitTyping();
+      setTyping({ x: p.x, y: p.y, value: '' });
       return;
     }
 
@@ -853,10 +897,38 @@ export default function Canvas() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const typingInField = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
+
+      // A live typing session owns the keyboard: every printable key is text,
+      // not a shortcut. Checked before anything else so 'd', 't' and the rest
+      // type normally instead of toggling the background or stitch preview.
+      if (typing && !typingInField) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setTyping(null);
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commitTyping();
+          return;
+        }
+        if (e.key === 'Backspace') {
+          e.preventDefault();
+          setTyping((t) => (t ? { ...t, value: t.value.slice(0, -1) } : t));
+          return;
+        }
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          setTyping((t) => (t ? { ...t, value: t.value + e.key } : t));
+          return;
+        }
+        return;
+      }
+
       if (e.key === 'Enter') finishDrawing(false);
       if (e.key === 'Escape') finishDrawing(true);
 
-      const typingInField = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
       if (typingInField) return; // let the field's own native editing (including its own Backspace/Ctrl+Z) happen
 
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
@@ -910,7 +982,7 @@ export default function Canvas() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [finishDrawing, selectedId, dispatch, setSelectedId, selectedIds, setSelectedIds, doc.background?.visible, drawingPoints, undo, redo]);
+  }, [finishDrawing, selectedId, dispatch, setSelectedId, selectedIds, setSelectedIds, doc.background?.visible, drawingPoints, undo, redo, typing, commitTyping]);
 
   // Attached as a native, non-passive listener (not the JSX onWheel prop) —
   // React registers wheel/touch handlers passively by default for scroll
@@ -1168,10 +1240,28 @@ export default function Canvas() {
       for (const p of drawingPoints) drawVertexMarker(ctx, toScreen(p), p.type, '#2f6fed', '#2f6fed');
     }
 
+    // Lettering being typed right now, drawn exactly like a real object so what
+    // you see is what gets committed, plus a caret at the baseline so an empty
+    // session still shows where the text will land.
+    if (typing) {
+      for (const obj of typedObjects) drawObject(ctx, obj, toScreen, view.scale, false, showStitchPreview);
+      const caretBase = toScreen({ x: typing.x, y: typing.y });
+      const lastX = typedObjects.length
+        ? Math.max(...typedObjects.flatMap((o) => o.points.map((pt) => pt.x)))
+        : typing.x;
+      const caretX = toScreen({ x: lastX, y: typing.y }).x + 2;
+      ctx.strokeStyle = '#2f6fed';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(caretX, caretBase.y + textSizeMm * 0.22 * view.scale);
+      ctx.lineTo(caretX, caretBase.y - textSizeMm * 0.78 * view.scale);
+      ctx.stroke();
+    }
+
     // Last, so the rulers stay legible over whatever the design puts near the
     // top-left corner.
     drawRulers(ctx, w, h, view.scale, view.panX, view.panY);
-  }, [doc, view, size, selectedIds, selectedId, showStitchPreview, drawingPoints, mousePos, toScreen, bgImg, cutMarkerPattern, tool, selectionBBox, hoveredEndpoint, getMarkerPositions]);
+  }, [doc, view, size, selectedIds, selectedId, showStitchPreview, drawingPoints, mousePos, toScreen, bgImg, cutMarkerPattern, tool, selectionBBox, hoveredEndpoint, getMarkerPositions, typing, typedObjects, textSizeMm]);
 
   const cursor = spaceDown
     ? activeDrag?.kind === 'pan'
@@ -1196,10 +1286,15 @@ export default function Canvas() {
         onDoubleClick={onDoubleClick}
         onContextMenu={(e) => e.preventDefault()}
       />
+      {tool === 'text' && <TextToolBar {...fontState} />}
       <div className="canvas-hint">
         {spaceDown
           ? 'Drag to pan'
-          : tool === 'select'
+          : tool === 'text'
+            ? typing
+              ? 'Type to add letters · Enter to place · Esc to cancel · click elsewhere to start another'
+              : 'Click in the hoop where the text should start, then type'
+            : tool === 'select'
             ? 'Click to select · drag empty space to multi-select · right-click for options · Delete to remove'
             : tool === 'rect' || tool === 'ellipse'
               ? 'Drag to draw the shape · hold Shift to keep it square/circular'

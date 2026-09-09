@@ -455,6 +455,15 @@ interface StoreValue {
   // object). Canvas clears it back to null once the line is placed/canceled.
   guideLineFor: string | null;
   setGuideLineFor: (id: string | null) => void;
+  // Settings for the type-on-canvas text tool. They live here rather than in a
+  // component so the picker beside the toolbar and the canvas that renders the
+  // typing are always looking at the same font and size.
+  textFontKey: string;
+  setTextFontKey: (key: string) => void;
+  textSizeMm: number;
+  setTextSizeMm: (mm: number) => void;
+  textStitchStyle: 'satin-auto' | 'fill';
+  setTextStitchStyle: (s: 'satin-auto' | 'fill') => void;
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
@@ -520,6 +529,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [tool, setTool] = useState<ToolId>('select');
   const [activeColor, setActiveColor] = useState<RGB>({ r: 237, g: 23, b: 31 });
   const [guideLineFor, setGuideLineFor] = useState<string | null>(null);
+  const [textFontKey, setTextFontKey] = useState<string>('');
+  const [textSizeMm, setTextSizeMm] = useState<number>(20);
+  const [textStitchStyle, setTextStitchStyle] = useState<'satin-auto' | 'fill'>('satin-auto');
 
   useEffect(() => {
     try {
@@ -548,6 +560,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setActiveColor,
         guideLineFor,
         setGuideLineFor,
+        textFontKey,
+        setTextFontKey,
+        textSizeMm,
+        setTextSizeMm,
+        textStitchStyle,
+        setTextStitchStyle,
       }}
     >
       {children}
