@@ -134,6 +134,11 @@ export interface EmbObject {
   // so projects saved before it existed still load (they just fall back to the
   // ordinary shape rules).
   fromText?: boolean;
+  // Objects sharing a groupId move, rotate and scale as one, and clicking any
+  // member selects all of them. Grouping is purely an editing convenience -- it
+  // has no effect on stitch order or on the exported file, and it is optional so
+  // projects saved before it existed still load.
+  groupId?: string;
 }
 
 export interface HoopSize {

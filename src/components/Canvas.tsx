@@ -61,6 +61,51 @@ interface View {
 
 const RULER_PX = 18;
 
+/** Limits a move so whatever is being dragged stays inside the hoop. Anything
+ * outside the hoop cannot be stitched, so letting a shape be dragged off the
+ * edge only produces a design that fails at the machine.
+ *
+ * An object already larger than the hoop on an axis is left unclamped on that
+ * axis -- clamping it would pin it in place and make it impossible to move at
+ * all, which is worse than letting it overhang while it is being resized. */
+function clampMoveToHoop(
+  boxes: { minX: number; minY: number; maxX: number; maxY: number },
+  dx: number,
+  dy: number,
+  hoopW: number,
+  hoopH: number,
+): { dx: number; dy: number } {
+  const left = -hoopW / 2;
+  const right = hoopW / 2;
+  const top = -hoopH / 2;
+  const bottom = hoopH / 2;
+  let outX = dx;
+  let outY = dy;
+  if (boxes.maxX - boxes.minX <= hoopW) {
+    if (boxes.minX + outX < left) outX = left - boxes.minX;
+    if (boxes.maxX + outX > right) outX = right - boxes.maxX;
+  }
+  if (boxes.maxY - boxes.minY <= hoopH) {
+    if (boxes.minY + outY < top) outY = top - boxes.minY;
+    if (boxes.maxY + outY > bottom) outY = bottom - boxes.maxY;
+  }
+  return { dx: outX, dy: outY };
+}
+
+/** Bounding box of a set of already-captured original point lists. */
+function boundsOfPointLists(lists: Iterable<Point[]>): { minX: number; minY: number; maxX: number; maxY: number } {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const list of lists) {
+    for (const p of list) {
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x);
+      maxY = Math.max(maxY, p.y);
+    }
+  }
+  return { minX, minY, maxX, maxY };
+}
+
 /** A 10mm grid across the hoop -- the increment embroidery is actually specified
  * in, so it doubles as a measuring aid. Every 50mm is drawn heavier and the two
  * centre axes heavier still, which is what makes it readable at a glance instead
@@ -575,6 +620,25 @@ export default function Canvas() {
       }
       const hit = getObjectAt(p);
       if (hit) {
+        // Clicking any member of a group picks up the whole group -- that is
+        // what grouping is for -- and the existing multi-move drag then carries
+        // them together.
+        const mates = hit.groupId ? doc.objects.filter((o) => o.groupId === hit.groupId) : [];
+        if (mates.length > 1 && !(selectedIds.length > 1 && selectedIds.includes(hit.id))) {
+          const ids = mates.map((o) => o.id);
+          setSelectedIds(ids);
+          const movable = mates.filter((o) => !o.locked);
+          if (movable.length > 0) {
+            dragRef.current = {
+              kind: 'move-multi',
+              ids: movable.map((o) => o.id),
+              startMm: p,
+              originals: new Map(movable.map((o) => [o.id, o.points.map((pt) => ({ ...pt }))])),
+              originalFills: new Map(movable.map((o) => [o.id, o.kind === 'fill' ? o.fill : null])),
+            };
+          }
+          return;
+        }
         if (selectedIds.length > 1 && selectedIds.includes(hit.id)) {
           // dragging one of an existing multi-selection moves the whole group
           const originals = new Map(doc.objects.filter((o) => selectedIds.includes(o.id)).map((o) => [o.id, o.points.map((pt) => ({ ...pt }))]));
@@ -622,8 +686,13 @@ export default function Canvas() {
     if (drag.kind === 'pan') {
       setView((v) => ({ ...v, panX: drag.startPan.x + (px - drag.startPx.x), panY: drag.startPan.y + (py - drag.startPx.y) }));
     } else if (drag.kind === 'move-object') {
-      const dx = p.x - drag.startMm.x;
-      const dy = p.y - drag.startMm.y;
+      const { dx, dy } = clampMoveToHoop(
+        boundsOfPointLists([drag.original]),
+        p.x - drag.startMm.x,
+        p.y - drag.startMm.y,
+        doc.hoop.width,
+        doc.hoop.height,
+      );
       const translate = (pt: Point) => ({ x: pt.x + dx, y: pt.y + dy });
       const patch: Partial<EmbObject> = { points: drag.original.map((pt) => ({ ...translate(pt), type: pt.type })) };
       if (drag.originalFill) patch.fill = transformFillAnchors(drag.originalFill, translate);
@@ -666,8 +735,15 @@ export default function Canvas() {
       const target = e.shiftKey ? constrainToSquare(drag.corner, p) : p;
       setDrawingPoints(rectPoints(drag.corner, target, drag.ellipse));
     } else if (drag.kind === 'move-multi') {
-      const dx = p.x - drag.startMm.x;
-      const dy = p.y - drag.startMm.y;
+      // One clamp for the whole selection's combined box, so a group keeps its
+      // internal spacing instead of individual members piling up on the edge.
+      const { dx, dy } = clampMoveToHoop(
+        boundsOfPointLists(drag.originals.values()),
+        p.x - drag.startMm.x,
+        p.y - drag.startMm.y,
+        doc.hoop.width,
+        doc.hoop.height,
+      );
       const translate = (pt: Point) => ({ x: pt.x + dx, y: pt.y + dy });
       for (const id of drag.ids) {
         const original = drag.originals.get(id);
@@ -803,6 +879,13 @@ export default function Canvas() {
           });
           setSelectedIds(newIds);
         }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g') {
+        e.preventDefault();
+        if (e.shiftKey) dispatch({ type: 'UNGROUP_OBJECTS', ids: selectedIds });
+        else if (selectedIds.length > 1) dispatch({ type: 'GROUP_OBJECTS', ids: selectedIds, groupId: makeId() });
         return;
       }
 
@@ -1162,6 +1245,10 @@ export default function Canvas() {
             dispatch({ type: 'REMOVE_OBJECT', id: contextMenu.obj.id });
             setSelectedIds([]);
           }}
+          canGroup={selectedIds.length > 1}
+          canUngroup={!!contextMenu.obj.groupId}
+          onGroup={() => dispatch({ type: 'GROUP_OBJECTS', ids: selectedIds, groupId: makeId() })}
+          onUngroup={() => dispatch({ type: 'UNGROUP_OBJECTS', ids: [contextMenu.obj.id] })}
           onToggleLock={() => dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { locked: !contextMenu.obj.locked } })}
           onToggleVisible={() => dispatch({ type: 'UPDATE_OBJECT', id: contextMenu.obj.id, patch: { visible: !contextMenu.obj.visible } })}
           onConvertKind={(kind) =>

@@ -25,6 +25,10 @@ export default function ContextMenu({
   onReverseDirection,
   onAddPoint,
   onDeletePoint,
+  canGroup,
+  canUngroup,
+  onGroup,
+  onUngroup,
 }: {
   state: ContextMenuState;
   onClose: () => void;
@@ -38,6 +42,10 @@ export default function ContextMenu({
   onReverseDirection: () => void;
   onAddPoint: (insertIndex: number, point: Point) => void;
   onDeletePoint: (vertexIndex: number) => void;
+  canGroup: boolean;
+  canUngroup: boolean;
+  onGroup: () => void;
+  onUngroup: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -98,6 +106,9 @@ export default function ContextMenu({
         <button onClick={act(() => onAddPoint(insertIndex, insertPoint))}>Add point here</button>
       )}
       {canDeletePoint && vertexIndex !== null && <button onClick={act(() => onDeletePoint(vertexIndex))}>Delete point</button>}
+      {(canGroup || canUngroup) && <div className="context-menu-sep" />}
+      {canGroup && <button onClick={act(onGroup)}>Group selection</button>}
+      {canUngroup && <button onClick={act(onUngroup)}>Ungroup</button>}
       <div className="context-menu-sep" />
       <button onClick={act(onToggleVisible)}>{obj.visible ? 'Hide' : 'Show'}</button>
       <button onClick={act(onToggleLock)}>{obj.locked ? 'Unlock' : 'Lock'}</button>

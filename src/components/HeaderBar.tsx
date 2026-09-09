@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { previewOptimizedOrder, useStore } from '../state/store';
+import { makeId, previewOptimizedOrder, useStore } from '../state/store';
 import { HOOP_PRESETS, type Document } from '../types';
 import { exportStitchFile, type ExportFormat } from '../formats/exportPattern';
 import { buildPattern } from '../stitching/engine';
@@ -15,7 +15,7 @@ const FORMATS: { id: ExportFormat; label: string }[] = [
 ];
 
 export default function HeaderBar() {
-  const { doc, dispatch, undo, redo, canUndo, canRedo } = useStore();
+  const { doc, dispatch, undo, redo, canUndo, canRedo, selectedIds } = useStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [showEmbNote, setShowEmbNote] = useState(false);
@@ -114,6 +114,31 @@ export default function HeaderBar() {
         </button>
         <button onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)">
           ↷
+        </button>
+      </div>
+
+      <button
+        onClick={() => dispatch({ type: 'CENTER_LAYOUT' })}
+        disabled={doc.objects.length === 0}
+        title="Move the whole design, as laid out, into the middle of the hoop — every object keeps its position relative to the others (this is not align-to-centre, which would stack them)"
+      >
+        Centre design
+      </button>
+
+      <div className="group-btns">
+        <button
+          onClick={() => dispatch({ type: 'GROUP_OBJECTS', ids: selectedIds, groupId: makeId() })}
+          disabled={selectedIds.length < 2}
+          title="Group the selected objects (Ctrl+G) — they then select and move as one"
+        >
+          Group
+        </button>
+        <button
+          onClick={() => dispatch({ type: 'UNGROUP_OBJECTS', ids: selectedIds })}
+          disabled={!selectedIds.some((id) => doc.objects.find((o) => o.id === id)?.groupId)}
+          title="Ungroup the selected group (Ctrl+Shift+G)"
+        >
+          Ungroup
         </button>
       </div>
 

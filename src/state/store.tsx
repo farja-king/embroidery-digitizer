@@ -74,6 +74,9 @@ type Action =
   | { type: 'REORDER'; fromIndex: number; toIndex: number }
   | { type: 'ALIGN_OBJECTS'; ids: string[]; mode: AlignMode }
   | { type: 'OPTIMIZE_STITCH_ORDER' }
+  | { type: 'GROUP_OBJECTS'; ids: string[]; groupId: string }
+  | { type: 'UNGROUP_OBJECTS'; ids: string[] }
+  | { type: 'CENTER_LAYOUT' }
   | { type: 'SET_HOOP'; hoop: HoopSize }
   | { type: 'SET_NAME'; name: string }
   | { type: 'SET_TRIM_THRESHOLD'; mm: number }
@@ -177,6 +180,22 @@ function optimizeStitchOrder(objects: EmbObject[]): EmbObject[] {
 // list most people never look at.
 export const previewOptimizedOrder = optimizeStitchOrder;
 
+/** Translates an object, bringing its fill's start/end markers and guide line
+ * along with it -- those are absolute design coordinates, so leaving them behind
+ * would silently detach them from the shape they belong to. */
+function shiftObject(o: EmbObject, dx: number, dy: number): EmbObject {
+  const moved: EmbObject = { ...o, points: o.points.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy })) };
+  if (o.kind === 'fill') {
+    moved.fill = {
+      ...o.fill,
+      startPoint: o.fill.startPoint ? { x: o.fill.startPoint.x + dx, y: o.fill.startPoint.y + dy } : null,
+      endPoint: o.fill.endPoint ? { x: o.fill.endPoint.x + dx, y: o.fill.endPoint.y + dy } : null,
+      guideLine: o.fill.guideLine ? o.fill.guideLine.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy })) : null,
+    };
+  }
+  return moved;
+}
+
 function bboxOf(o: EmbObject): { minX: number; minY: number; maxX: number; maxY: number } {
   const flat = flattenPath(o.points, o.kind === 'fill');
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -265,6 +284,50 @@ function reducer(state: Document, action: Action): Document {
     }
     case 'OPTIMIZE_STITCH_ORDER':
       return { ...state, objects: optimizeStitchOrder(state.objects) };
+    case 'GROUP_OBJECTS': {
+      if (action.ids.length < 2) return state;
+      return {
+        ...state,
+        objects: state.objects.map((o) => (action.ids.includes(o.id) ? { ...o, groupId: action.groupId } : o)),
+      };
+    }
+    case 'UNGROUP_OBJECTS': {
+      // Ungrouping any member dissolves the whole group, not just the objects
+      // that happened to be selected -- leaving two of five still bound
+      // together is never what "ungroup" is asked for.
+      const affected = new Set(
+        state.objects.filter((o) => action.ids.includes(o.id) && o.groupId).map((o) => o.groupId!),
+      );
+      if (affected.size === 0) return state;
+      return {
+        ...state,
+        objects: state.objects.map((o) => {
+          if (!o.groupId || !affected.has(o.groupId)) return o;
+          const { groupId: _drop, ...rest } = o;
+          return rest as EmbObject;
+        }),
+      };
+    }
+    case 'CENTER_LAYOUT': {
+      // Move the design as a whole so its bounding box sits in the middle of the
+      // hoop. Deliberately NOT per-object: centring each object individually
+      // would stack the whole design on one spot, which is what the align tools
+      // are for. Everything keeps its position relative to everything else.
+      if (state.objects.length === 0) return state;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const o of state.objects) {
+        const b = bboxOf(o);
+        minX = Math.min(minX, b.minX);
+        minY = Math.min(minY, b.minY);
+        maxX = Math.max(maxX, b.maxX);
+        maxY = Math.max(maxY, b.maxY);
+      }
+      if (!isFinite(minX)) return state;
+      const dx = -(minX + maxX) / 2;
+      const dy = -(minY + maxY) / 2;
+      if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) return state;
+      return { ...state, objects: state.objects.map((o) => shiftObject(o, dx, dy)) };
+    }
     case 'SET_HOOP':
       return { ...state, hoop: action.hoop };
     case 'SET_NAME':
