@@ -59,6 +59,128 @@ interface View {
   panY: number; // px
 }
 
+const RULER_PX = 18;
+
+/** A 10mm grid across the hoop -- the increment embroidery is actually specified
+ * in, so it doubles as a measuring aid. Every 50mm is drawn heavier and the two
+ * centre axes heavier still, which is what makes it readable at a glance instead
+ * of a uniform mesh. Skipped when zoomed far enough out that the lines would
+ * merge into a solid tone. */
+function drawHoopGrid(
+  ctx: CanvasRenderingContext2D,
+  toScreen: (p: Point) => Point,
+  scale: number,
+  hw: number,
+  hh: number,
+): void {
+  const STEP = 10;
+  if (STEP * scale < 6) return;
+  const tl = toScreen({ x: -hw / 2, y: -hh / 2 });
+  const br = toScreen({ x: hw / 2, y: hh / 2 });
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+  ctx.clip();
+  ctx.lineWidth = 1;
+  const line = (mm: number, vertical: boolean) => {
+    const major = mm === 0;
+    ctx.strokeStyle = major ? '#c6bfae' : Math.abs(mm) % 50 === 0 ? '#ded7c8' : '#eae5d9';
+    ctx.beginPath();
+    if (vertical) {
+      const x = Math.round(toScreen({ x: mm, y: 0 }).x) + 0.5;
+      ctx.moveTo(x, tl.y);
+      ctx.lineTo(x, br.y);
+    } else {
+      const y = Math.round(toScreen({ x: 0, y: mm }).y) + 0.5;
+      ctx.moveTo(tl.x, y);
+      ctx.lineTo(br.x, y);
+    }
+    ctx.stroke();
+  };
+  const firstX = -Math.floor(hw / 2 / STEP) * STEP;
+  for (let mm = firstX; mm <= hw / 2 + 1e-6; mm += STEP) line(mm, true);
+  const firstY = -Math.floor(hh / 2 / STEP) * STEP;
+  for (let mm = firstY; mm <= hh / 2 + 1e-6; mm += STEP) line(mm, false);
+  ctx.restore();
+}
+
+/** Rulers down the top and left edges, marked in millimetres from the hoop
+ * centre. Ticks every 10mm to match the grid; the labelled interval widens as
+ * you zoom out so the numbers never collide. */
+function drawRulers(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  scale: number,
+  panX: number,
+  panY: number,
+): void {
+  const R = RULER_PX;
+  const TICK = 10;
+  const labelStep = [10, 20, 50, 100, 200, 500].find((mm) => mm * scale >= 42) ?? 1000;
+
+  ctx.save();
+  ctx.fillStyle = '#f6f3ea';
+  ctx.fillRect(0, 0, w, R);
+  ctx.fillRect(0, 0, R, h);
+  ctx.strokeStyle = '#d5cfc0';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, R + 0.5);
+  ctx.lineTo(w, R + 0.5);
+  ctx.moveTo(R + 0.5, 0);
+  ctx.lineTo(R + 0.5, h);
+  ctx.stroke();
+
+  ctx.font = '9px ui-sans-serif, system-ui, sans-serif';
+  ctx.fillStyle = '#8b8371';
+  ctx.strokeStyle = '#b8b1a1';
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  const xFrom = Math.ceil((0 - panX) / scale / TICK) * TICK;
+  const xTo = (w - panX) / scale;
+  for (let mm = xFrom; mm <= xTo; mm += TICK) {
+    const sx = Math.round(mm * scale + panX) + 0.5;
+    if (sx < R) continue;
+    const labelled = mm % labelStep === 0;
+    ctx.beginPath();
+    ctx.moveTo(sx, labelled ? 4 : R - 5);
+    ctx.lineTo(sx, R);
+    ctx.stroke();
+    if (labelled) ctx.fillText(String(mm), sx + 2, 3);
+  }
+
+  const yFrom = Math.ceil((0 - panY) / scale / TICK) * TICK;
+  const yTo = (h - panY) / scale;
+  for (let mm = yFrom; mm <= yTo; mm += TICK) {
+    const sy = Math.round(mm * scale + panY) + 0.5;
+    if (sy < R) continue;
+    const labelled = mm % labelStep === 0;
+    ctx.beginPath();
+    ctx.moveTo(labelled ? 4 : R - 5, sy);
+    ctx.lineTo(R, sy);
+    ctx.stroke();
+    if (labelled) {
+      // Rotated so the number reads along the ruler rather than spilling across it.
+      ctx.save();
+      ctx.translate(3, sy - 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = 'right';
+      ctx.fillText(String(mm), 0, 0);
+      ctx.restore();
+      ctx.textAlign = 'left';
+    }
+  }
+
+  // The corner square, so the two strips meet cleanly.
+  ctx.fillStyle = '#efebe0';
+  ctx.fillRect(0, 0, R, R);
+  ctx.strokeStyle = '#d5cfc0';
+  ctx.strokeRect(0.5, 0.5, R, R);
+  ctx.restore();
+}
+
 function rgbCss(c: { r: number; g: number; b: number }): string {
   return `rgb(${c.r}, ${c.g}, ${c.b})`;
 }
@@ -783,6 +905,8 @@ export default function Canvas() {
     ctx.lineWidth = 1;
     ctx.strokeRect(topLeft.x, topLeft.y, hw * view.scale, hh * view.scale);
 
+    drawHoopGrid(ctx, toScreen, view.scale, hw, hh);
+
     // background template image (traced over, toggled with D)
     if (doc.background?.visible && bgImg) {
       const bg = doc.background;
@@ -960,6 +1084,10 @@ export default function Canvas() {
       ctx.setLineDash([]);
       for (const p of drawingPoints) drawVertexMarker(ctx, toScreen(p), p.type, '#2f6fed', '#2f6fed');
     }
+
+    // Last, so the rulers stay legible over whatever the design puts near the
+    // top-left corner.
+    drawRulers(ctx, w, h, view.scale, view.panX, view.panY);
   }, [doc, view, size, selectedIds, selectedId, showStitchPreview, drawingPoints, mousePos, toScreen, bgImg, cutMarkerPattern, tool, selectionBBox, hoveredEndpoint, getMarkerPositions]);
 
   const cursor = spaceDown
