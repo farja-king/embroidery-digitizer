@@ -1,5 +1,5 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { bridgeRowGaps, dist, isConvexPolygon, normalAt, offsetPolygon, polygonArea, resamplePath, tatamiRows } from './geometry';
+import { bridgeRowGaps, dist, isConvexPolygon, normalAt, offsetPolygon, polygonArea, regionChainRows, resamplePath, tatamiRows } from './geometry';
 
 // A fill underlay sits entirely inside the top stitching's coverage — roughly one
 // thread width in from the digitized outline — so none of its own stitches (the
@@ -218,19 +218,29 @@ export function fillUnderlay(polygon: Point[], topAngle: number, settings: Under
       // two perimeter edges unstitched by the underlay; add edge-run as an
       // explicit Underlay 2 pass when that stabilization is wanted, rather
       // than having "tatami" silently mean something extra.
-      // On a concave shape a scan row can have more than one disconnected span
-      // (both arms of an L, either side of a notch) -- bridgeRowGaps routes any
-      // such gap along the shape's own boundary instead of a stray straight
-      // stitch across the open space between them.
-      return bridgeRowGaps(tatamiRows(inset, perpAngle, spacing, spacing * 1.5), inset, spacing * 4, spacing);
+      // `autoUnderlayType` steers away from tatami on a concave shape entirely
+      // (see there), but a user can still pick it manually -- when they do,
+      // stitch it the same connected-region way the top fill does instead of
+      // one continuous scan, for the same reason (see regionChainRows).
+      // connectedRegionRows detects topology on its own always-fine grid
+      // regardless of `spacing` here, so underlay's much coarser row pitch
+      // doesn't make it miss a real narrow waist the way a naive same-spacing
+      // adjacency check would.
+      return isConvexPolygon(polygon)
+        ? bridgeRowGaps(tatamiRows(inset, perpAngle, spacing, spacing * 1.5), inset, spacing * 4, spacing)
+        : regionChainRows(inset, topAngle, spacing, spacing * 1.5, entryPoint, spacing);
     case 'double-tatami': {
       // One pass perpendicular to the top stitching, one parallel to it -- a crossed
       // grid (horizontal one way, vertical the other), not the same direction twice.
       // On a concave shape perpAngle already collapses to topAngle (see above), so
       // passA and passB would otherwise duplicate the same rows -- phase-shifted by
       // half a row instead in that case, so "double" still means real extra coverage
-      // rather than literally re-stitching the same lines twice.
-      const passA = tatamiRows(inset, perpAngle, spacing, spacing * 1.5);
+      // rather than literally re-stitching the same lines twice. passA also goes
+      // through regionChainRows on a concave shape, same reasoning as the plain
+      // 'tatami' case above.
+      const passA = isConvexPolygon(polygon)
+        ? tatamiRows(inset, perpAngle, spacing, spacing * 1.5)
+        : regionChainRows(inset, perpAngle, spacing, spacing * 1.5, entryPoint, spacing);
       const passB = isConvexPolygon(polygon)
         ? tatamiRows(inset, topAngle, spacing, spacing * 1.5)
         : tatamiRows(inset, topAngle, spacing, spacing * 1.5, undefined, spacing / 2);

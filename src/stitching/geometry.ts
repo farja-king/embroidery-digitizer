@@ -433,6 +433,236 @@ export function tatamiRows(
   return out;
 }
 
+/** Splits a scan-line fill into independently-stitchable connected regions instead
+ * of one row list covering the whole shape -- the technique real digitizing
+ * software (Hatch, Ink/Stitch) uses for a genuinely non-convex outline (a
+ * staircase, a star, two lobes joined by a thin waist). A single fixed scan
+ * direction across such a shape has no way to know it bends: neighboring rows
+ * can have completely different spans purely because the row happened to cross
+ * from one "arm" of the shape to another, which `bridgeRowGaps` patches up
+ * after the fact with a boundary-hugging detour on *every* such row -- reading
+ * as many short repeated runs rather than a real fill. This instead groups
+ * spans into connected components first (two spans in adjacent rows belong to
+ * the same region when their X-ranges overlap -- the standard row-by-row
+ * connected-component technique), stitches each region as its own self-
+ * contained boustrophedon block, and leaves it to the caller to chain the
+ * blocks together with a single travel bridge between each pair instead of
+ * one per affected row. Each returned block keeps the same row-index-based
+ * zigzag/stagger numbering the whole shape would have used, so regions still
+ * read as normal tatami rows individually, just grouped by which connected
+ * blob they belong to. */
+export function connectedRegionRows(
+  polygon: Point[],
+  angle: number,
+  rowSpacing: number,
+  stitchLength: number,
+): Point[][] {
+  if (polygon.length < 3) return [];
+  const c = centroid(polygon);
+  const rotated = polygon.map((p) => rotatePoint(p, c, -angle));
+  const ys = rotated.map((p) => p.y);
+  const shapeMinY = Math.min(...ys);
+  const shapeMaxY = Math.max(...ys);
+  const spacing = Math.max(0.15, rowSpacing);
+  const stitchLen = Math.max(0.2, stitchLength);
+  const firstY = shapeMinY + spacing / 2;
+
+  // Topology (which spans are truly part of the same connected blob) is detected
+  // on a separate, always-fine grid -- capped well below the actual output row
+  // spacing -- rather than the real rows themselves. A coarse output spacing (an
+  // underlay's, say, several mm apart) can be wider than a shape's own narrow
+  // waist in the scan direction, skipping past it entirely; sampled at a fine
+  // enough resolution instead, the waist always gets caught, so the two lobes it
+  // joins are correctly recognized as one region regardless of how sparse the
+  // actual stitch rows end up being. Real output spans then just look up which
+  // fine-grid component they fall on.
+  const detectSpacing = Math.max(0.15, Math.min(spacing, shapeMaxY - shapeMinY > 0 ? (shapeMaxY - shapeMinY) / 40 : spacing, 1));
+  const detectFirstY = shapeMinY + detectSpacing / 2;
+
+  interface FineSpan {
+    x0: number;
+    x1: number;
+  }
+  const fineRows: FineSpan[][] = [];
+  for (let y = detectFirstY; y < shapeMaxY; y += detectSpacing) {
+    const xs = scanlineSpans(rotated, y);
+    const spans: FineSpan[] = [];
+    for (let i = 0; i + 1 < xs.length; i += 2) spans.push({ x0: xs[i], x1: xs[i + 1] });
+    fineRows.push(spans);
+  }
+  if (fineRows.length === 0) return [];
+
+  const find = (parent: Map<string, string>, id: string): string => {
+    let r = id;
+    while (parent.get(r) !== r) r = parent.get(r)!;
+    let cur = id;
+    while (parent.get(cur) !== r) {
+      const next = parent.get(cur)!;
+      parent.set(cur, r);
+      cur = next;
+    }
+    return r;
+  };
+  const parent = new Map<string, string>();
+  for (let r = 0; r < fineRows.length; r++) {
+    for (let s = 0; s < fineRows[r].length; s++) parent.set(`${r}:${s}`, `${r}:${s}`);
+  }
+  for (let r = 0; r + 1 < fineRows.length; r++) {
+    for (let s = 0; s < fineRows[r].length; s++) {
+      for (let t = 0; t < fineRows[r + 1].length; t++) {
+        const a = fineRows[r][s];
+        const b = fineRows[r + 1][t];
+        if (a.x0 <= b.x1 && b.x0 <= a.x1) {
+          const ra = find(parent, `${r}:${s}`);
+          const rb = find(parent, `${r + 1}:${t}`);
+          if (ra !== rb) parent.set(ra, rb);
+        }
+      }
+    }
+  }
+
+  // Real output rows, at the actual requested spacing -- topology comes from the
+  // fine grid above (via nearest fine-row lookup + X-overlap), not from these.
+  interface Span {
+    x0: number;
+    x1: number;
+    y: number;
+    rowIndex: number; // global, matches tatamiRows' own numbering for L/R + stagger
+  }
+  const rows: Span[][] = [];
+  let rowIndex = 0;
+  for (let y = firstY; y < shapeMaxY; y += spacing) {
+    const xs = scanlineSpans(rotated, y);
+    const spans: Span[] = [];
+    for (let i = 0; i + 1 < xs.length; i += 2) {
+      spans.push({ x0: xs[i], x1: xs[i + 1], y, rowIndex: rowIndex++ });
+    }
+    if (spans.length) rows.push(spans);
+  }
+  if (rows.length === 0) return [];
+
+  const groups = new Map<string, Span[]>();
+  for (const rowSpans of rows) {
+    for (const span of rowSpans) {
+      const fr = Math.min(fineRows.length - 1, Math.max(0, Math.round((span.y - detectFirstY) / detectSpacing)));
+      // The nearest fine row's overlapping span decides this real span's group --
+      // checking a couple of neighboring fine rows too in case the exact-nearest
+      // one landed just past a boundary the real span itself is still inside.
+      let root: string | null = null;
+      for (const fr2 of [fr, fr - 1, fr + 1]) {
+        if (fr2 < 0 || fr2 >= fineRows.length) continue;
+        for (let t = 0; t < fineRows[fr2].length; t++) {
+          const fs = fineRows[fr2][t];
+          if (span.x0 <= fs.x1 && fs.x0 <= span.x1) {
+            root = find(parent, `${fr2}:${t}`);
+            break;
+          }
+        }
+        if (root) break;
+      }
+      const key = root ?? `unmatched:${span.y}:${span.x0}`;
+      (groups.get(key) ?? groups.set(key, []).get(key)!).push(span);
+    }
+  }
+
+  const out: Point[][] = [];
+  for (const spans of groups.values()) {
+    spans.sort((a, b) => a.y - b.y || a.x0 - b.x0);
+    const block: Point[] = [];
+    for (const span of spans) {
+      const leftToRight = span.rowIndex % 2 === 0;
+      const from = leftToRight ? span.x0 : span.x1;
+      const to = leftToRight ? span.x1 : span.x0;
+      const phase = span.rowIndex % 2 === 0 ? 0 : stitchLen / 2;
+      const dir = to >= from ? 1 : -1;
+      const startX = from + dir * phase;
+      const positions: number[] = [from];
+      for (let x = startX; dir > 0 ? x < to : x > to; x += dir * stitchLen) {
+        if (Math.abs(x - from) > 1e-9) positions.push(x);
+      }
+      if (positions.length < 2 || Math.abs(positions[positions.length - 1] - to) > stitchLen * 0.25) {
+        positions.push(to);
+      } else {
+        positions[positions.length - 1] = to;
+      }
+      for (const rx of positions) block.push(rotatePoint({ x: rx, y: span.y }, c, angle));
+    }
+    out.push(block);
+  }
+  return out;
+}
+
+/** For a genuinely non-convex scan-fillable shape (a staircase, a star, two
+ * lobes joined by a thin waist): stitches each connected region of the scan
+ * (see connectedRegionRows) as its own self-contained block instead of
+ * forcing one continuous scan across the whole outline, which is what
+ * produces a "runs up and down the height, over and over" symptom -- a
+ * single fixed direction has no way to know the shape bends, so nearly every
+ * row needs its own boundary-hugging detour. Chained via ordinary
+ * nearest-neighbor: starting as close to `anchor` as possible, each next
+ * block is whichever remaining one (in either direction -- a block's own
+ * boustrophedon is just as reversible as a full scan's) has an end closest
+ * to wherever the previous block finished, joined by a single
+ * perimeter-walked travel bridge each -- same "never cut across finished
+ * fill" reasoning used everywhere else a bridge is needed in this engine.
+ * Shared by the top fill (engine.ts, anchored on the fill's start point) and
+ * a tatami/double-tatami underlay pass on a concave shape (underlay.ts,
+ * anchored on the entry point) -- same technique either way, since both are
+ * really just "stitch a scan-line fill of this outline." Only a handful of
+ * regions ever come out of a real shape, so this greedy ordering is
+ * effectively optimal in practice; a true minimum-travel ordering is a
+ * genuine (NP-hard) travelling-salesman problem not worth solving exactly
+ * here. */
+export function regionChainRows(
+  polygon: Point[],
+  angle: number,
+  rowSpacing: number,
+  stitchLength: number,
+  anchor: Point | null,
+  step: number,
+): Point[] {
+  const blocks = connectedRegionRows(polygon, angle, rowSpacing, stitchLength);
+  if (blocks.length === 0) return [];
+  if (blocks.length === 1) return blocks[0];
+
+  const remaining = [...blocks];
+  let current: Point | null = anchor;
+  const out: Point[] = [];
+  while (remaining.length) {
+    let bestIdx = 0;
+    let bestReversed = false;
+    let bestCost = Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const block = remaining[i];
+      const first = block[0];
+      const last = block[block.length - 1];
+      const costForward = current ? Math.hypot(first.x - current.x, first.y - current.y) : 0;
+      const costReversed = current ? Math.hypot(last.x - current.x, last.y - current.y) : 0;
+      if (costForward < bestCost) {
+        bestCost = costForward;
+        bestIdx = i;
+        bestReversed = false;
+      }
+      if (costReversed < bestCost) {
+        bestCost = costReversed;
+        bestIdx = i;
+        bestReversed = true;
+      }
+    }
+    const chosen = remaining.splice(bestIdx, 1)[0];
+    const block = bestReversed ? [...chosen].reverse() : chosen;
+    if (current) {
+      const first = block[0];
+      if (Math.abs(current.x - first.x) > 0.05 || Math.abs(current.y - first.y) > 0.05) {
+        out.push(...perimeterBridge(polygon, current, first, step));
+      }
+    }
+    out.push(...block);
+    current = block[block.length - 1];
+  }
+  return out;
+}
+
 /** Offsets every point of an already-fine *open* path along its own local
  * normal -- the guided-fill equivalent of offsetPolygon, but for a path with
  * two real ends rather than a closed loop. Used to generate the shifted
