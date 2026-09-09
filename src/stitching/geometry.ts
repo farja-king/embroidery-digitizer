@@ -320,15 +320,30 @@ export function polygonArea(points: Point[]): number {
  * -- forcing the split technique there produces far more boundary-hugging travel
  * bridges than a plain single scan needs (bridgeRowGaps already handles a concave
  * row's own multiple spans; it's the *forced* near/far partition on top of that
- * which multiplies the travel). */
+ * which multiplies the travel).
+ *
+ * Near-collinear points are treated as straight using an absolute mm tolerance
+ * (perpendicular distance of the middle point from the line through its two
+ * neighbors), not a raw cross-product magnitude -- a real user-drawn "rectangle"
+ * often has a sub-millimeter wobble at one vertex (marker-drag snapping, curve
+ * flattening, etc.) that's completely invisible on screen but still technically
+ * breaks a zero-tolerance convexity test, silently routing a shape that's
+ * functionally a rectangle through the concave-only fallback path instead of
+ * the convex-only split technique it actually needs. */
 export function isConvexPolygon(points: Point[]): boolean {
   const n = points.length;
   if (n < 4) return true;
+  const TOLERANCE_MM = 0.5;
   let sign = 0;
   for (let i = 0; i < n; i++) {
     const a = points[i];
     const b = points[(i + 1) % n];
     const c = points[(i + 2) % n];
+    const lineLen = Math.hypot(c.x - a.x, c.y - a.y);
+    if (lineLen > 1e-9) {
+      const dist = Math.abs((c.x - a.x) * (a.y - b.y) - (a.x - b.x) * (c.y - a.y)) / lineLen;
+      if (dist < TOLERANCE_MM) continue;
+    }
     const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
     if (Math.abs(cross) < 1e-9) continue;
     const s = cross > 0 ? 1 : -1;
