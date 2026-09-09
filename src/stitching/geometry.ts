@@ -482,67 +482,11 @@ export function connectedRegionRows(
   const stitchLen = Math.max(0.2, stitchLength);
   const firstY = shapeMinY + spacing / 2;
 
-  // Topology (which spans are truly part of the same connected blob) is detected
-  // on a separate, always-fine grid -- capped well below the actual output row
-  // spacing -- rather than the real rows themselves. A coarse output spacing (an
-  // underlay's, say, several mm apart) can be wider than a shape's own narrow
-  // waist in the scan direction, skipping past it entirely; sampled at a fine
-  // enough resolution instead, the waist always gets caught, so the two lobes it
-  // joins are correctly recognized as one region regardless of how sparse the
-  // actual stitch rows end up being. Real output spans then just look up which
-  // fine-grid component they fall on.
-  const detectSpacing = Math.max(0.15, Math.min(spacing, shapeMaxY - shapeMinY > 0 ? (shapeMaxY - shapeMinY) / 40 : spacing, 1));
-  const detectFirstY = shapeMinY + detectSpacing / 2;
-
-  interface FineSpan {
-    x0: number;
-    x1: number;
-  }
-  const fineRows: FineSpan[][] = [];
-  for (let y = detectFirstY; y < shapeMaxY; y += detectSpacing) {
-    const xs = scanlineSpans(rotated, y);
-    const spans: FineSpan[] = [];
-    for (let i = 0; i + 1 < xs.length; i += 2) spans.push({ x0: xs[i], x1: xs[i + 1] });
-    fineRows.push(spans);
-  }
-  if (fineRows.length === 0) return [];
-
-  const find = (parent: Map<string, string>, id: string): string => {
-    let r = id;
-    while (parent.get(r) !== r) r = parent.get(r)!;
-    let cur = id;
-    while (parent.get(cur) !== r) {
-      const next = parent.get(cur)!;
-      parent.set(cur, r);
-      cur = next;
-    }
-    return r;
-  };
-  const parent = new Map<string, string>();
-  for (let r = 0; r < fineRows.length; r++) {
-    for (let s = 0; s < fineRows[r].length; s++) parent.set(`${r}:${s}`, `${r}:${s}`);
-  }
-  for (let r = 0; r + 1 < fineRows.length; r++) {
-    for (let s = 0; s < fineRows[r].length; s++) {
-      for (let t = 0; t < fineRows[r + 1].length; t++) {
-        const a = fineRows[r][s];
-        const b = fineRows[r + 1][t];
-        if (a.x0 <= b.x1 && b.x0 <= a.x1) {
-          const ra = find(parent, `${r}:${s}`);
-          const rb = find(parent, `${r + 1}:${t}`);
-          if (ra !== rb) parent.set(ra, rb);
-        }
-      }
-    }
-  }
-
-  // Real output rows, at the actual requested spacing -- topology comes from the
-  // fine grid above (via nearest fine-row lookup + X-overlap), not from these.
   interface Span {
     x0: number;
     x1: number;
     y: number;
-    rowIndex: number; // global, matches tatamiRows' own numbering for L/R + stagger
+    rowIndex: number; // global, matches tatamiRows' own numbering for the stagger
   }
   const rows: Span[][] = [];
   let rowIndex = 0;
@@ -552,40 +496,66 @@ export function connectedRegionRows(
     for (let i = 0; i + 1 < xs.length; i += 2) {
       spans.push({ x0: xs[i], x1: xs[i + 1], y, rowIndex: rowIndex++ });
     }
-    if (spans.length) rows.push(spans);
+    rows.push(spans);
   }
-  if (rows.length === 0) return [];
+  if (rows.every((r) => r.length === 0)) return [];
 
-  const groups = new Map<string, Span[]>();
-  for (const rowSpans of rows) {
-    for (const span of rowSpans) {
-      const fr = Math.min(fineRows.length - 1, Math.max(0, Math.round((span.y - detectFirstY) / detectSpacing)));
-      // The nearest fine row's overlapping span decides this real span's group --
-      // checking a couple of neighboring fine rows too in case the exact-nearest
-      // one landed just past a boundary the real span itself is still inside.
-      let root: string | null = null;
-      for (const fr2 of [fr, fr - 1, fr + 1]) {
-        if (fr2 < 0 || fr2 >= fineRows.length) continue;
-        for (let t = 0; t < fineRows[fr2].length; t++) {
-          const fs = fineRows[fr2][t];
-          if (span.x0 <= fs.x1 && fs.x0 <= span.x1) {
-            root = find(parent, `${fr2}:${t}`);
-            break;
-          }
-        }
-        if (root) break;
+  // Boustrophedon cell decomposition -- the technique real digitizing software
+  // uses, and the whole reason this function exists. A "cell" is a maximal run of
+  // consecutive rows whose spans line up one-to-one, so the cell can be covered
+  // by a single uninterrupted snake with every row-to-row turn landing directly
+  // above the previous row's end. A cell boundary happens exactly where the
+  // sweep passes a concave vertex and the span structure changes -- a span
+  // splitting in two (the top of a letter's counter), or two merging back into
+  // one (the bottom of it). Grouping by plain connected component instead is
+  // what produced the earlier behavior: every arm of an "E" is connected through
+  // its spine, so the whole letter came back as ONE region whose rows still
+  // jumped between arms, needing a boundary detour on nearly every row. Cells fix
+  // that structurally -- each is monotone by construction, so the only travel
+  // left is between cells, a handful of walks instead of one per row.
+  const cells: Span[][] = [];
+  let openCells: (Span[] | null)[] = []; // parallel to previous row's spans
+  for (let r = 0; r < rows.length; r++) {
+    const curr = rows[r];
+    const prev = r > 0 ? rows[r - 1] : [];
+    const overlaps = (a: Span, b: Span) => a.x0 <= b.x1 && b.x0 <= a.x1;
+    const nextOpen: (Span[] | null)[] = new Array(curr.length).fill(null);
+    for (let s = 0; s < curr.length; s++) {
+      const prevIdx: number[] = [];
+      for (let q = 0; q < prev.length; q++) if (overlaps(curr[s], prev[q])) prevIdx.push(q);
+      let continued: Span[] | null = null;
+      if (prevIdx.length === 1) {
+        // Only continue the previous cell if that span also connects to exactly
+        // this one -- otherwise the sweep just passed a split and both sides need
+        // to start fresh cells, or the previous cell would zigzag between them.
+        const q = prevIdx[0];
+        let fanOut = 0;
+        for (let t = 0; t < curr.length; t++) if (overlaps(curr[t], prev[q])) fanOut++;
+        if (fanOut === 1) continued = openCells[q];
       }
-      const key = root ?? `unmatched:${span.y}:${span.x0}`;
-      (groups.get(key) ?? groups.set(key, []).get(key)!).push(span);
+      if (continued) {
+        continued.push(curr[s]);
+        nextOpen[s] = continued;
+      } else {
+        const cell = [curr[s]];
+        cells.push(cell);
+        nextOpen[s] = cell;
+      }
     }
+    openCells = nextOpen;
   }
 
   const out: Point[][] = [];
-  for (const spans of groups.values()) {
-    spans.sort((a, b) => a.y - b.y || a.x0 - b.x0);
+  for (const spans of cells) {
     const block: Point[] = [];
+    let localRow = 0;
     for (const span of spans) {
-      const leftToRight = span.rowIndex % 2 === 0;
+      // Direction alternates per row *within this cell*, not by the shape-global
+      // row number -- that is what keeps a cell's snake continuous, each row
+      // ending directly above where the next one starts. The stagger phase still
+      // follows the global row number so the brick pattern stays consistent
+      // across cell boundaries.
+      const leftToRight = localRow++ % 2 === 0;
       const from = leftToRight ? span.x0 : span.x1;
       const to = leftToRight ? span.x1 : span.x0;
       const phase = span.rowIndex % 2 === 0 ? 0 : stitchLen / 2;
