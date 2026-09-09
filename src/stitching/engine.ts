@@ -2,6 +2,64 @@ import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType 
 import { bridgeRowGaps, centroid, flattenPath, guidedFillRows, normalAt, offsetPolygon, pathLength, perimeterBridge, resamplePath, rotatePoint, straightBridge, tatamiRows } from './geometry';
 import { autoUnderlayType, fillUnderlay, normalizeUnderlay, satinUnderlay } from './underlay';
 
+/** Covers the whole `[shapeMinY, shapeMaxY]` range as two interleaved passes at
+ * double the normal row spacing instead of one: an "out" pass starting right at
+ * `anchorY`'s own side and walking to the far extreme, and a "back" pass using
+ * the rows in between (offset by one normal spacing) walking from the far
+ * extreme back to finish near `anchorY` again. Together both passes still cover
+ * the shape at the normal row pitch, but -- unlike a single full-shape scan --
+ * both legs start and end on the same (anchor) side, which is what makes this
+ * the right technique when start and end points are too close together for a
+ * real near/far split (see splitFillRows). `tatamiRows`' own scan order is
+ * always low-Y-to-high-Y regardless of anchor -- ascending order only starts
+ * *at* the anchor side when the anchor itself sits at the low extreme, so
+ * whichever pass needs to start at a high-side anchor gets reversed instead
+ * (and the other pass, needing to start at the opposite/far extreme, reversed
+ * the other way around). Tries every left/right start parity for both legs and
+ * keeps whichever pairing gives the shortest actual join between them, same
+ * reasoning as splitFillRows itself. */
+function thereAndBackRows(
+  polygon: Point[],
+  angle: number,
+  rowSpacing: number,
+  stitchLength: number,
+  shapeMinY: number,
+  shapeMaxY: number,
+  anchorY: number,
+  step: number,
+): Point[] {
+  const doubleSpacing = rowSpacing * 2;
+  const fullRange: [number, number] = [shapeMinY, shapeMaxY];
+  // Anchor nearer the max extreme: "out" must start high (reverse the natural
+  // ascending scan) and "back" must start low, finishing high (no reverse).
+  // Anchor nearer the min extreme: the opposite -- "out" needs no reverse,
+  // "back" does.
+  const anchorNearMax = Math.abs(anchorY - shapeMaxY) < Math.abs(anchorY - shapeMinY);
+  let best: { out: Point[]; back: Point[]; cost: number } | null = null;
+  for (const outLtr of [true, false]) {
+    for (const backLtr of [true, false]) {
+      let out = tatamiRows(polygon, angle, doubleSpacing, stitchLength, fullRange, anchorY, outLtr);
+      if (anchorNearMax) out = out.reverse();
+      let back = tatamiRows(polygon, angle, doubleSpacing, stitchLength, fullRange, anchorY + rowSpacing, backLtr);
+      if (!anchorNearMax) back = back.reverse();
+      if (out.length === 0 || back.length === 0) continue;
+      const cost = pathLength(perimeterBridge(polygon, out[out.length - 1], back[0], step));
+      if (!best || cost < best.cost) best = { out, back, cost };
+    }
+  }
+  if (!best) {
+    // Nothing fit even at double spacing (a genuinely tiny shape) -- a plain
+    // single-spacing scan is the only thing left to fall back to.
+    return tatamiRows(polygon, angle, rowSpacing, stitchLength, fullRange, anchorY);
+  }
+  const travel =
+    Math.abs(best.out[best.out.length - 1].x - best.back[0].x) > 0.05 ||
+    Math.abs(best.out[best.out.length - 1].y - best.back[0].y) > 0.05
+      ? perimeterBridge(polygon, best.out[best.out.length - 1], best.back[0], step)
+      : [];
+  return [...best.out, ...travel, ...best.back];
+}
+
 /** When both a start and end point are set, splits the fill into two independently
  * -scanned regions meeting at the row level of the end point, instead of one
  * continuous scan bridged across a possibly-unrelated gap. This is how real
@@ -56,16 +114,49 @@ function splitFillRows(
   // needs reversing to start at the far extreme and finish back at the split.
   const nearNeedsReverse = !nearIsMin;
 
+  // Degenerate case: start and end are actually close together (in the fill
+  // angle's own Y axis, not just wherever splitY happens to land) -- there's no
+  // real near/far split possible when both ends are on the same side, since
+  // whichever "near" sliver that leaves is too thin for even a single row.
+  // Falling through to the old single-full-scan fallback below (return farRows
+  // when nearRows is empty) is fine when splitY only *coincidentally* lands at
+  // a shape extreme (endpoint sitting exactly at the natural scan boundary,
+  // with the start point elsewhere -- that full scan already starts close to
+  // the start point in that case); it's specifically when the start point
+  // itself is also right there that a single full scan instead starts at the
+  // *opposite* extreme and needs one long bridge back to actually reach the
+  // end point -- the "goes all the way from the bottom to the top and never
+  // really stops at the marker" symptom this was reported as. Use a genuine
+  // there-and-back double pass instead for that specific case: every other row
+  // going out from the start/end side to the far extreme, then the interleaved
+  // remaining rows coming back -- together still covering the whole shape at
+  // the normal row pitch, but both legs actually begin and end on the
+  // start/end side instead of stranding the finish at the opposite extreme.
+  const nearExtreme = nearIsMin ? shapeMinY : shapeMaxY;
+  const nearSpan = Math.abs(splitY - nearExtreme);
+  // Requiring the start point itself to be genuinely near that same extreme
+  // (not just "closer than the other side" by a hair, which a point sitting
+  // exactly at the shape's midline can still technically be) rules out a
+  // near-miss tie-break coincidentally producing a thin nearRange while the
+  // start point actually sits well away from the split -- that case already
+  // gets a short entry bridge from the plain single-scan fallback below, so
+  // forcing it through the double-pass technique here would be pure downside.
+  const startNearExtreme = Math.abs(startLocalY - nearExtreme) < (shapeMaxY - shapeMinY) * 0.35;
+  if (nearSpan < rowSpacing && startNearExtreme) {
+    return thereAndBackRows(polygon, angle, rowSpacing, stitchLength, shapeMinY, shapeMaxY, splitY, step);
+  }
+
   let best: { near: Point[]; far: Point[]; cost: number } | null = null;
   for (const nearLtr of [true, false]) {
     for (const farLtr of [true, false]) {
       let near = tatamiRows(polygon, angle, rowSpacing, stitchLength, nearRange, splitY, nearLtr);
       if (nearNeedsReverse) near = near.reverse();
       const far = tatamiRows(polygon, angle, rowSpacing, stitchLength, farRange, splitY, farLtr).reverse();
-      const cost =
-        near.length && far.length
-          ? pathLength(perimeterBridge(polygon, near[near.length - 1], far[0], step))
-          : 0;
+      // An empty side here just means the split landed right at a shape extreme
+      // (the end point sits exactly at the far/near natural edge) -- a perfectly
+      // normal single-region scan, not the degenerate case handled above. No
+      // join cost applies since there's nothing on that side to bridge to.
+      const cost = near.length && far.length ? pathLength(perimeterBridge(polygon, near[near.length - 1], far[0], step)) : 0;
       if (!best || cost < best.cost) best = { near, far, cost };
     }
   }
