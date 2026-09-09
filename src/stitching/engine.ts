@@ -1,5 +1,5 @@
 import type { EmbObject, Point, TwoPassUnderlay, UnderlaySettings, UnderlayType } from '../types';
-import { bridgeRowGaps, centroid, flattenPath, guidedFillRows, normalAt, offsetPolygon, pathLength, perimeterBridge, resamplePath, rotatePoint, straightBridge, tatamiRows } from './geometry';
+import { bridgeRowGaps, centroid, flattenPath, guidedFillRows, isConvexPolygon, normalAt, offsetPolygon, pathLength, perimeterBridge, resamplePath, rotatePoint, straightBridge, tatamiRows } from './geometry';
 import { autoUnderlayType, fillUnderlay, normalizeUnderlay, satinUnderlay } from './underlay';
 
 /** Covers the whole `[shapeMinY, shapeMaxY]` range as two interleaved passes at
@@ -290,10 +290,12 @@ function fillStitches(
     // a plain angle scan, so start/end alignment works the same way.
     rows = guidedFillRows(expanded, guideLine, rowSpacing, stitchLength);
     reverseTowardTarget(rows, startPoint, endPoint);
-  } else if (startPoint && endPoint) {
+  } else if (startPoint && endPoint && isConvexPolygon(polygon)) {
     // Both ends pinned down: split the fill into two regions meeting at the end
     // point's row instead of one continuous scan bridged across an unrelated
-    // gap -- see splitFillRows for the technique.
+    // gap -- see splitFillRows for the technique. Only sound on a convex outline
+    // -- see isConvexPolygon for why a concave shape (two lobes joined by a
+    // narrow waist, an L, a star) falls through to the plain scan below instead.
     rows = splitFillRows(expanded, angle, rowSpacing, stitchLength, startPoint, endPoint, step);
   } else {
     rows = tatamiRows(expanded, angle, rowSpacing, stitchLength);

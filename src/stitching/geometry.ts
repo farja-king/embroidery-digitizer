@@ -309,6 +309,35 @@ export function polygonArea(points: Point[]): number {
   return a / 2;
 }
 
+/** True when every turn along the polygon's boundary bends the same way (all cross
+ * products of consecutive edge vectors share a sign, collinear runs allowed) -- the
+ * standard convex-polygon test. Used to gate splitFillRows/thereAndBackRows: their
+ * whole technique assumes a Y-range genuinely partitions the shape into two sensible
+ * halves, which only holds for a convex outline. A concave shape (two blocks joined
+ * by a narrow waist, an L, a star) can have neighboring scan rows with wildly
+ * different widths at the same row-index step, which reads as a "near/far region"
+ * boundary to the row generator even though it's really just the shape's own waist
+ * -- forcing the split technique there produces far more boundary-hugging travel
+ * bridges than a plain single scan needs (bridgeRowGaps already handles a concave
+ * row's own multiple spans; it's the *forced* near/far partition on top of that
+ * which multiplies the travel). */
+export function isConvexPolygon(points: Point[]): boolean {
+  const n = points.length;
+  if (n < 4) return true;
+  let sign = 0;
+  for (let i = 0; i < n; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % n];
+    const c = points[(i + 2) % n];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(cross) < 1e-9) continue;
+    const s = cross > 0 ? 1 : -1;
+    if (sign === 0) sign = s;
+    else if (s !== sign) return false;
+  }
+  return true;
+}
+
 /**
  * Scan-line fill of a (possibly concave, non-self-intersecting) polygon.
  * Returns rows of alternating spans: each row is a flat array of x positions
