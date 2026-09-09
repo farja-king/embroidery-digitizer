@@ -226,9 +226,17 @@ export function fillUnderlay(polygon: Point[], topAngle: number, settings: Under
       // regardless of `spacing` here, so underlay's much coarser row pitch
       // doesn't make it miss a real narrow waist the way a naive same-spacing
       // adjacency check would.
+      // regionChainRows' own output (both within a single connected block and
+      // across a block boundary) still needs the same bridgeRowGaps pass the
+      // top fill applies afterward -- grouping spans by connected component
+      // and sorting them by row position doesn't guarantee two spans that end
+      // up adjacent in that order also land close together in space (their
+      // individual zigzag L/R direction was decided before the regrouping),
+      // which otherwise shows up as exactly the kind of stray jump within one
+      // block bridgeRowGaps exists to route along the boundary instead.
       return isConvexPolygon(polygon)
         ? bridgeRowGaps(tatamiRows(inset, perpAngle, spacing, spacing * 1.5), inset, spacing * 4, spacing)
-        : regionChainRows(inset, topAngle, spacing, spacing * 1.5, entryPoint, spacing);
+        : bridgeRowGaps(regionChainRows(inset, topAngle, spacing, spacing * 1.5, entryPoint, spacing), inset, spacing * 4, spacing);
     case 'double-tatami': {
       // One pass perpendicular to the top stitching, one parallel to it -- a crossed
       // grid (horizontal one way, vertical the other), not the same direction twice.
@@ -240,7 +248,7 @@ export function fillUnderlay(polygon: Point[], topAngle: number, settings: Under
       // 'tatami' case above.
       const passA = isConvexPolygon(polygon)
         ? tatamiRows(inset, perpAngle, spacing, spacing * 1.5)
-        : regionChainRows(inset, perpAngle, spacing, spacing * 1.5, entryPoint, spacing);
+        : bridgeRowGaps(regionChainRows(inset, perpAngle, spacing, spacing * 1.5, entryPoint, spacing), inset, spacing * 4, spacing);
       const passB = isConvexPolygon(polygon)
         ? tatamiRows(inset, topAngle, spacing, spacing * 1.5)
         : tatamiRows(inset, topAngle, spacing, spacing * 1.5, undefined, spacing / 2);
