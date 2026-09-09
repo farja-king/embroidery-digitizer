@@ -1,12 +1,21 @@
-import { useState } from 'react';
-import { requestLocalFonts, loadUploadedFont, supportsLocalFontAccess, type FontEntry } from '../fonts/fontLoader';
+import { useEffect, useState } from 'react';
+import {
+  requestLocalFonts,
+  loadUploadedFont,
+  supportsLocalFontAccess,
+  getCachedFontEntries,
+  cacheFontEntry,
+  getRecentFontKeys,
+  addRecentFontKey,
+  type FontEntry,
+} from '../fonts/fontLoader';
 import { textToObjects } from '../text/textToObjects';
 import { useStore } from '../state/store';
 import type { RGB } from '../types';
 
 export default function TextModal({ color, onClose }: { color: RGB; onClose: () => void }) {
   const { doc, dispatch, setSelectedIds } = useStore();
-  const [fonts, setFonts] = useState<FontEntry[]>([]);
+  const [fonts, setFonts] = useState<FontEntry[]>(() => getCachedFontEntries());
   const [selectedKey, setSelectedKey] = useState<string>('');
   const [text, setText] = useState('Text');
   const [sizeMm, setSizeMm] = useState(20);
@@ -17,7 +26,40 @@ export default function TextModal({ color, onClose }: { color: RGB; onClose: () 
   const [error, setError] = useState<string | null>(null);
   const [building, setBuilding] = useState(false);
 
+  const recentKeys = getRecentFontKeys();
+  const recentFonts = recentKeys.map((k) => fonts.find((f) => f.key === k)).filter((f): f is FontEntry => !!f);
+  const otherFonts = fonts.filter((f) => !recentKeys.includes(f.key));
+
   const selectedFont = fonts.find((f) => f.key === selectedKey) ?? null;
+
+  // Default to the most recently used font once the list is available, so a
+  // returning user doesn't have to pick again for a font they just used.
+  useEffect(() => {
+    if (selectedKey || fonts.length === 0) return;
+    setSelectedKey((recentFonts[0] ?? fonts[0]).key);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fonts]);
+
+  // Once granted, the browser's local-font permission persists for the tab --
+  // a fresh queryLocalFonts() call resolves instantly with no new prompt. If
+  // the cache is already warm (this modal was opened before, or a permission
+  // grant already happened this session) skip straight to it; otherwise try
+  // once automatically so a *returning* user never has to click "Load fonts"
+  // again. This silently does nothing if the browser requires a fresh click
+  // (no prior grant this tab) -- the button below still covers that case.
+  useEffect(() => {
+    if (fonts.length > 0 || !supportsLocalFontAccess()) return;
+    requestLocalFonts()
+      .then((found) => {
+        found.sort((a, b) => a.displayName.localeCompare(b.displayName));
+        setFonts((prev) => mergeFonts(prev, found));
+      })
+      .catch(() => {
+        // Expected on a first-ever use in this tab (no gesture yet) -- the
+        // "Load fonts from this PC" button below handles that click.
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const loadSystemFonts = async () => {
     setLoadingFonts(true);
@@ -38,6 +80,7 @@ export default function TextModal({ color, onClose }: { color: RGB; onClose: () 
     setError(null);
     try {
       const entry = await loadUploadedFont(file);
+      cacheFontEntry(entry);
       setFonts((prev) => mergeFonts(prev, [entry]));
       setSelectedKey(entry.key);
     } catch {
@@ -56,6 +99,7 @@ export default function TextModal({ color, onClose }: { color: RGB; onClose: () 
         setError('That text produced no stitchable shapes (font may be missing those glyphs).');
         return;
       }
+      addRecentFontKey(selectedFont.key);
       dispatch({ type: 'ADD_OBJECTS', objects });
       setSelectedIds(objects.map((o) => o.id));
       onClose();
@@ -80,12 +124,26 @@ export default function TextModal({ color, onClose }: { color: RGB; onClose: () 
           Font
           <select value={selectedKey} onChange={(e) => setSelectedKey(e.target.value)} disabled={fonts.length === 0}>
             {fonts.length === 0 && <option value="">No fonts loaded yet</option>}
-            {fonts.map((f) => (
-              <option key={f.key} value={f.key}>
-                {f.displayName}
-                {f.source === 'upload' ? ' (uploaded)' : ''}
-              </option>
-            ))}
+            {recentFonts.length > 0 && (
+              <optgroup label="Recently used">
+                {recentFonts.map((f) => (
+                  <option key={f.key} value={f.key}>
+                    {f.displayName}
+                    {f.source === 'upload' ? ' (uploaded)' : ''}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {otherFonts.length > 0 && (
+              <optgroup label="All fonts">
+                {otherFonts.map((f) => (
+                  <option key={f.key} value={f.key}>
+                    {f.displayName}
+                    {f.source === 'upload' ? ' (uploaded)' : ''}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
         </label>
 
