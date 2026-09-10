@@ -183,6 +183,10 @@ export interface EmbObject {
     letterSpacingMm: number;
     originX: number; // baseline start, design mm
     originY: number;
+    /** Which build of the font the geometry came from, so a design saved
+     * before a font was rebuilt can be set again rather than sewing rails
+     * that no longer match the font. */
+    fontVersion?: string;
   };
 }
 

@@ -1,6 +1,5 @@
 import alphabet from './fonts/alphabet.json';
-import { defaultObject, makeId } from '../state/store';
-import type { EmbObject, PathPoint, RGB, UnderlaySettings } from '../types';
+import type { EmbObject, PathPoint } from '../types';
 
 /** A digitized embroidery font: for every character, the satin columns it is
  * built from, each given as its two rails in the order the original was sewn.
@@ -18,6 +17,8 @@ import type { EmbObject, PathPoint, RGB, UnderlaySettings } from '../types';
  * `scaleFor(font, sizeMm)` to place them. */
 export interface EmbroideryFont {
   name: string;
+  /** Fingerprint of the glyph geometry, stamped into every word set from it. */
+  version?: string;
   capHeight: number;
   spaceAdvance: number;
   glyphs: Record<string, { adv: number; cols: { a: number[][]; b: number[][] }[] }>;
@@ -78,21 +79,11 @@ export function missingGlyphs(font: EmbroideryFont, text: string): string[] {
   return [...new Set([...text].filter((c) => !hasGlyph(font, c)))];
 }
 
-export interface EmbroideryTextOptions {
-  text: string;
-  font: EmbroideryFont;
-  sizeMm: number; // height of a capital, the way lettering size is always given
-  x: number; // design mm, baseline start
-  y: number; // design mm, baseline
-  color: RGB;
-  letterSpacingMm?: number;
-  underlayMode?: 'auto' | 'none';
-}
 
 /** Builds the geometry for one word: every column of every letter, end to end,
  * with the break indices that say where each column starts and where its second
  * rail begins. */
-function buildWord(
+export function buildWord(
   word: string,
   font: EmbroideryFont,
   sizeMm: number,
@@ -133,7 +124,7 @@ function buildWord(
 
 /** How wide a word will be, so the caller can advance the pen without building
  * the geometry twice. */
-function wordWidth(word: string, font: EmbroideryFont, sizeMm: number, letterSpacingMm: number): number {
+export function wordWidth(word: string, font: EmbroideryFont, sizeMm: number, letterSpacingMm: number): number {
   const scale = scaleFor(font, sizeMm);
   let w = 0;
   for (const ch of word) {
@@ -150,7 +141,7 @@ function wordWidth(word: string, font: EmbroideryFont, sizeMm: number, letterSpa
  * the geometry those produced, so any of them can be changed afterwards and
  * the word redrawn -- the way a text box behaves in a drawing program. */
 export function rebuildTextObject(obj: EmbObject, patch: Partial<NonNullable<EmbObject['text']>> = {}): EmbObject {
-  const meta = { ...obj.text!, ...patch };
+  const meta = { ...obj.text!, ...patch, fontVersion: BUILT_IN_FONT.version };
   const built = buildWord(meta.value, BUILT_IN_FONT, meta.sizeMm, meta.letterSpacingMm, meta.originX, meta.originY);
   if (!built) return { ...obj, text: meta };
   return {
@@ -168,52 +159,7 @@ export function rebuildTextObject(obj: EmbObject, patch: Partial<NonNullable<Emb
   };
 }
 
-/** Lays out a string and returns one object per word.
- *
- * A word, not a letter and not a whole line. One object per word means the
- * word is a single thing to select and to set stitch settings on, and -- the
- * reason it matters on the machine -- its letters are sewn in one continuous
- * run with the needle walking between them. As separate objects the thread had
- * to jump from wherever one letter happened to finish to wherever the next
- * happened to start, and any jump past the trim threshold makes the machine cut
- * and re-thread. On a test stitch-out that was five cuts in two words. */
-export function embroideryTextToObjects(opts: EmbroideryTextOptions): EmbObject[] {
-  const { text, font, sizeMm, x, y, color } = opts;
-  const spacing = opts.letterSpacingMm ?? 0;
-  const scale = scaleFor(font, sizeMm);
-  const objects: EmbObject[] = [];
-  let penX = x;
-
-  for (const word of text.split(/(\s+)/)) {
-    if (word.length === 0) continue;
-    if (/^\s+$/.test(word)) {
-      penX += word.length * font.spaceAdvance * scale;
-      continue;
-    }
-    const built = buildWord(word, font, sizeMm, spacing, penX, y);
-    penX += wordWidth(word, font, sizeMm, spacing);
-    if (!built) continue;
-
-    const obj = defaultObject('satin', built.points, color);
-    obj.satin.columnBreaks = built.columnBreaks;
-    obj.satin.railSplits = built.railSplits;
-    obj.satin.letterBreaks = built.letterBreaks;
-    obj.satin.width = built.width;
-    obj.satin.pullCompensation = 0;
-    obj.id = makeId();
-    obj.name = `"${word}"`;
-    obj.fromText = true;
-    obj.text = { value: word, sizeMm, letterSpacingMm: spacing, originX: penX - wordWidth(word, font, sizeMm, spacing), originY: y };
-    if (opts.underlayMode === 'none') {
-      const none: UnderlaySettings = { mode: 'manual', type: 'none', spacing: 2.5 };
-      obj.satin.underlay = { pass1: none, pass2: none };
-    }
-    objects.push(obj);
-  }
-  return objects;
-}
-
-function columnWidth(col: { a: number[][]; b: number[][] } | undefined, scale: number): number {
+export function columnWidth(col: { a: number[][]; b: number[][] } | undefined, scale: number): number {
   if (!col || col.a.length === 0 || col.b.length === 0) return 1;
   const mid = Math.floor(Math.min(col.a.length, col.b.length) / 2);
   const a = col.a[mid];

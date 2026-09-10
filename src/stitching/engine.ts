@@ -553,37 +553,71 @@ function fillStitches(
  * font defines a column, and it is exact -- no centreline is guessed at, and
  * the stitch angle is whatever the two rails imply, including the deliberate
  * slant a digitizer puts on a curve. */
-function railStitches(a: Point[], b: Point[], density: number, pullCompensation: number): StitchPoint[] {
-  const len = (r: Point[]) => {
-    let t = 0;
-    for (let i = 1; i < r.length; i++) t += Math.hypot(r[i].x - r[i - 1].x, r[i].y - r[i - 1].y);
-    return t;
-  };
-  const steps = Math.max(2, Math.round(Math.max(len(a), len(b)) / Math.max(0.05, density)) + 1);
-  const along = (r: Point[], n: number): Point[] => {
-    const cum = [0];
-    for (let i = 1; i < r.length; i++) cum.push(cum[i - 1] + Math.hypot(r[i].x - r[i - 1].x, r[i].y - r[i - 1].y));
-    const total = cum[cum.length - 1];
-    const out: Point[] = [];
-    for (let k = 0; k < n; k++) {
-      const t = total * (k / (n - 1));
-      let j = 1;
-      while (j < cum.length - 1 && cum[j] < t) j++;
-      const span = cum[j] - cum[j - 1] || 1;
-      const u = (t - cum[j - 1]) / span;
-      out.push({ x: r[j - 1].x + (r[j].x - r[j - 1].x) * u, y: r[j - 1].y + (r[j].y - r[j - 1].y) * u });
+function railStitches(
+  a: Point[],
+  b: Point[],
+  density: number,
+  pullCompensation: number,
+  exitTowards?: Point | null,
+  entryFrom?: Point | null,
+): StitchPoint[] {
+  let n = Math.min(a.length, b.length);
+  if (n < 2) return [];
+  // Which rail the first penetration goes to is as free as which it ends on.
+  // Starting on the side the thread is already at saves a stroke width of
+  // travel across bare fabric at every join.
+  if (entryFrom) {
+    const da = Math.hypot(a[0].x - entryFrom.x, a[0].y - entryFrom.y);
+    const db = Math.hypot(b[0].x - entryFrom.x, b[0].y - entryFrom.y);
+    if (db < da) {
+      const t = a;
+      a = b;
+      b = t;
     }
-    return out;
-  };
-  const ra = along(a, steps);
-  const rb = along(b, steps);
+  }
+  n = Math.min(a.length, b.length);
+  // The two rails come paired: a[i] and b[i] are the ends of one rung, so the
+  // distance between them is the width of the stroke at that point. Walking a
+  // fraction along each rail independently to find facing points instead would
+  // lose that -- on a curve the outer rail runs ahead of the inner one, and the
+  // column pinches and swells as the mismatch drifts.
+  const step = (r: Point[], i: number) => Math.hypot(r[i].x - r[i - 1].x, r[i].y - r[i - 1].y);
+  const cum = [0];
+  for (let i = 1; i < n; i++) cum.push(cum[i - 1] + Math.max(step(a, i), step(b, i)));
+  const total = cum[n - 1];
+  if (total < 1e-6) return [];
+  // Half the density, because the needle lands on one rail per step and it is
+  // the spacing down a single rail that the density setting names.
+  let steps = Math.max(2, Math.round(total / Math.max(0.025, density / 2)) + 1);
+  // Which rail the last penetration lands on is set by whether the step count
+  // is odd or even, and one step either way changes the spacing by a fraction
+  // of a per cent on anything but the shortest stroke. So it is free to choose,
+  // and worth choosing: finishing on the side facing wherever the thread goes
+  // next takes a stroke width off the travel, every time.
+  if (exitTowards) {
+    const far = steps % 2 === 1 ? a : b;
+    const near = steps % 2 === 1 ? b : a;
+    const end = far[far.length - 1];
+    const alt = near[near.length - 1];
+    const dEnd = Math.hypot(end.x - exitTowards.x, end.y - exitTowards.y);
+    const dAlt = Math.hypot(alt.x - exitTowards.x, alt.y - exitTowards.y);
+    if (dAlt < dEnd) steps += 1;
+  }
   const comp = Math.max(0, pullCompensation);
   const out: StitchPoint[] = [];
-  for (let i = 0; i < steps; i++) {
-    // Compensation pushes each rail a little further out along the line
-    // between them, which is the direction the fabric pulls in.
-    let ax = ra[i].x, ay = ra[i].y, bx = rb[i].x, by = rb[i].y;
+  let j = 1;
+  for (let k = 0; k < steps; k++) {
+    const t = (total * k) / (steps - 1);
+    while (j < n - 1 && cum[j] < t) j++;
+    const span = cum[j] - cum[j - 1] || 1;
+    const u = Math.min(1, Math.max(0, (t - cum[j - 1]) / span));
+    let ax = a[j - 1].x + (a[j].x - a[j - 1].x) * u;
+    let ay = a[j - 1].y + (a[j].y - a[j - 1].y) * u;
+    let bx = b[j - 1].x + (b[j].x - b[j - 1].x) * u;
+    let by = b[j - 1].y + (b[j].y - b[j - 1].y) * u;
     if (comp > 0) {
+      // Compensation pushes each rail a little further out along the line
+      // between them, which is the direction the fabric pulls in.
       const dx = bx - ax, dy = by - ay;
       const d = Math.hypot(dx, dy);
       if (d > 1e-9) {
@@ -592,8 +626,13 @@ function railStitches(a: Point[], b: Point[], density: number, pullCompensation:
         bx += ux * comp; by += uy * comp;
       }
     }
-    if (i % 2 === 0) { out.push({ x: ax, y: ay, command: 'STITCH' }); out.push({ x: bx, y: by, command: 'STITCH' }); }
-    else { out.push({ x: bx, y: by, command: 'STITCH' }); out.push({ x: ax, y: ay, command: 'STITCH' }); }
+    // One penetration per step, alternating rails, so every stitch crosses the
+    // column. Landing on both rails at each step would put the same needle
+    // points down but join them in the order across, a hair along the rail,
+    // back across -- and that hair is a 0.35mm stitch on every other
+    // penetration. Machines break thread on stitches that short or drop them,
+    // and half of ours were under 0.6mm against Hatch's 0.6 per cent.
+    out.push(k % 2 === 0 ? { x: ax, y: ay, command: 'STITCH' } : { x: bx, y: by, command: 'STITCH' });
   }
   return out;
 }
@@ -623,11 +662,11 @@ function columnsOf(obj: EmbObject): { points: Point[]; width: number; railLeft?:
  * two columns it runs a plain line at the object's own stitch length -- short,
  * and buried under the stroke it lands on. That is what a digitized font does:
  * one letter, one run of thread, no trim until the letter is finished. */
-function letterStitches(obj: EmbObject): StitchPoint[] {
+function letterStitches(obj: EmbObject, exit?: Point | null): StitchPoint[] {
   // A letter from a digitized font carries both rails of every column, so it
   // is stitched from those directly rather than from a centreline and a width.
   const splits = obj.satin.railSplits;
-  if (splits && splits.length > 0) return railLetterStitches(obj, splits);
+  if (splits && splits.length > 0) return railLetterStitches(obj, splits, exit);
 
   const cols = columnsOf(obj);
   if (cols.length === 0) return [];
@@ -726,7 +765,7 @@ function walkWithinLetter(centre: Point[], from: Point, to: Point, step: number)
   return resamplePath(path, step).slice(1);
 }
 
-function railLetterStitches(obj: EmbObject, splits: number[]): StitchPoint[] {
+function railLetterStitches(obj: EmbObject, splits: number[], exit?: Point | null): StitchPoint[] {
   const breaks = obj.satin.columnBreaks ?? [];
   const bounds = [0, ...breaks.filter((b) => b > 0 && b < obj.points.length), obj.points.length];
 
@@ -767,11 +806,23 @@ function railLetterStitches(obj: EmbObject, splits: number[]): StitchPoint[] {
     // next one. Without that the letter finishes on whichever stroke greedy
     // ordering happened to leave until last, which can be the far side, and
     // the walk to the next letter then crosses back over the whole letter.
+    // The last letter of a word aims at whatever the pattern goes on to sew,
+    // so a word ends nearest the next object rather than wherever its final
+    // stroke happened to fall.
     const nextGroup = groups[gi + 1];
-    const exitTarget = nextGroup ? groupCentre(nextGroup) : null;
-    const order = bestColumnOrder(group, cursor, exitTarget);
+    const targets = nextGroup ? entryCandidates(nextGroup) : exit ? [exit] : [];
+    const order = bestColumnOrder(group, cursor, targets);
 
-    for (const { column, flip } of order) {
+    for (let oi = 0; oi < order.length; oi++) {
+      const { column, flip } = order[oi];
+      // Where the thread has to get to once this stroke is done: the start of
+      // the next stroke in the letter, or the nearest way into whatever comes
+      // after the letter. The stroke finishes on whichever of its two sides
+      // faces that.
+      const next = order[oi + 1];
+      const aim = next
+        ? (next.flip ? next.column.a[next.column.a.length - 1] : next.column.a[0])
+        : nearestOf(targets, endsOfColumn(column, flip));
       const ra = flip ? [...column.a].reverse() : column.a;
       const rb = flip ? [...column.b].reverse() : column.b;
       const bestDist = cursor ? Math.hypot(ra[0].x - cursor.x, ra[0].y - cursor.y) : 0;
@@ -808,7 +859,7 @@ function railLetterStitches(obj: EmbObject, splits: number[]): StitchPoint[] {
         }
       }
 
-      const col = railStitches(sa, sb, obj.satin.density, obj.satin.pullCompensation ?? 0);
+      const col = railStitches(sa, sb, obj.satin.density, obj.satin.pullCompensation ?? 0, aim, cursor);
       out.push(...col);
       const last = col[col.length - 1];
       if (last) cursor = { x: last.x, y: last.y };
@@ -823,18 +874,43 @@ function railLetterStitches(obj: EmbObject, splits: number[]): StitchPoint[] {
 
 type LetterColumn = { a: Point[]; b: Point[] };
 
-function groupCentre(group: LetterColumn[]): Point {
-  let x = 0;
-  let y = 0;
-  let n = 0;
-  for (const c of group) {
-    for (const p of c.a) {
-      x += p.x;
-      y += p.y;
-      n++;
+/** The two corners at the end a stroke will be left from. */
+function endsOfColumn(c: LetterColumn, flip: boolean): Point[] {
+  return flip ? [c.a[0], c.b[0]] : [c.a[c.a.length - 1], c.b[c.b.length - 1]];
+}
+
+/** Whichever of `targets` is closest to any of `from`, or null if there are
+ * none -- the last stroke of the last word has nowhere in particular to be. */
+function nearestOf(targets: Point[], from: Point[]): Point | null {
+  let best: Point | null = null;
+  let bd = Infinity;
+  for (const t of targets) {
+    for (const f of from) {
+      const d = Math.hypot(t.x - f.x, t.y - f.y);
+      if (d < bd) {
+        bd = d;
+        best = t;
+      }
     }
   }
-  return n ? { x: x / n, y: y / n } : { x: 0, y: 0 };
+  return best;
+}
+
+/** Every point the next letter could actually be entered at: the two ends of
+ * each of its strokes. Aiming at the letter's centre instead is too blunt --
+ * on a "T" the top and bottom of the stem are near enough equally far from the
+ * middle of an "e", so the scan finishes at the top about as often as the
+ * bottom, and the travel thread then has to cross the whole letter to get down
+ * to where the "e" begins. Aiming at the real attachment points makes the pair
+ * of ends the closest available pair, which is the whole point: that thread
+ * lies on top of the fabric and its length is what shows. */
+function entryCandidates(group: LetterColumn[]): Point[] {
+  const out: Point[] = [];
+  for (const c of group) {
+    if (c.a.length < 2 || c.b.length < 2) continue;
+    out.push(c.a[0], c.a[c.a.length - 1], c.b[0], c.b[c.b.length - 1]);
+  }
+  return out;
 }
 
 /** Picks the order to sew a letter's strokes in, and which end to enter each
@@ -851,38 +927,133 @@ function groupCentre(group: LetterColumn[]): Point {
 function bestColumnOrder(
   group: LetterColumn[],
   entry: Point | null,
-  exit: Point | null,
+  exitTargets: Point[],
 ): { column: LetterColumn; flip: boolean }[] {
-  if (group.length <= 1) {
-    if (group.length === 0) return [];
-    const c = group[0];
-    const head = entry ? Math.hypot(c.a[0].x - entry.x, c.a[0].y - entry.y) : 0;
-    const tail = entry ? Math.hypot(c.a[c.a.length - 1].x - entry.x, c.a[c.a.length - 1].y - entry.y) : 0;
-    return [{ column: c, flip: entry !== null && tail < head }];
+  if (group.length === 0) return [];
+  // Which end of a stroke the needle works from is a choice, and so is which of
+  // the two rails it starts and finishes on -- the side the first and last
+  // penetrations land on is the router's to set. So the cost of arriving at a
+  // stroke, or leaving it, is the nearer of the two corners there, not the
+  // distance to rail A alone.
+  const endsOf = (c: LetterColumn, flip: boolean): Point[] =>
+    flip ? [c.a[0], c.b[0]] : [c.a[c.a.length - 1], c.b[c.b.length - 1]];
+  const startsOf = (c: LetterColumn, flip: boolean): Point[] => endsOf(c, !flip);
+  const gap = (p: Point | null, c: LetterColumn, flip: boolean) =>
+    p === null ? 0 : Math.min(...startsOf(c, flip).map((q) => Math.hypot(p.x - q.x, p.y - q.y)));
+  const hop = (c: LetterColumn, flip: boolean, d: LetterColumn, dflip: boolean) => {
+    let best = Infinity;
+    for (const p of endsOf(c, flip)) {
+      for (const q of startsOf(d, dflip)) best = Math.min(best, Math.hypot(p.x - q.x, p.y - q.y));
+    }
+    return best;
+  };
+  const leaveToExit = (c: LetterColumn, flip: boolean) =>
+    Math.min(...endsOf(c, flip).map((p) => toExit(p)));
+  // Distance to the nearest place the next letter can be picked up from.
+  const toExit = (p: Point) => {
+    let best = Infinity;
+    for (const t of exitTargets) best = Math.min(best, Math.hypot(p.x - t.x, p.y - t.y));
+    return best === Infinity ? 0 : best;
+  };
+  // Exact shortest route through the letter, by dynamic programming over
+  // subsets: for every set of strokes already sewn, and every stroke and
+  // direction that set could have finished on, keep only the cheapest way to
+  // have got there. A letter has a handful of strokes, so this is instant, and
+  // unlike sewing nearest-first it cannot be led into a corner -- the "x" was
+  // being finished at the bottom of a leg when its closest approach to the next
+  // letter was at the top, because by then the only stroke left was that one.
+  const n = group.length;
+  if (n > 12) return greedyColumnOrder(group, entry, toExit);
+  const S = 1 << n;
+  const INF = Infinity;
+  // cost[set][last * 2 + flip]
+  const cost: number[][] = Array.from({ length: S }, () => new Array(n * 2).fill(INF));
+  const from: number[][] = Array.from({ length: S }, () => new Array(n * 2).fill(-1));
+  for (let i = 0; i < n; i++) {
+    for (const f of [0, 1]) {
+      cost[1 << i][i * 2 + f] = gap(entry, group[i], f === 1);
+    }
   }
+  for (let set = 1; set < S; set++) {
+    for (let last = 0; last < n; last++) {
+      if (!(set & (1 << last))) continue;
+      for (const lf of [0, 1]) {
+        const base = cost[set][last * 2 + lf];
+        if (base === INF) continue;
+        for (let nxt = 0; nxt < n; nxt++) {
+          if (set & (1 << nxt)) continue;
+          for (const nf of [0, 1]) {
+            const c = base + hop(group[last], lf === 1, group[nxt], nf === 1);
+            const ns = set | (1 << nxt);
+            if (c < cost[ns][nxt * 2 + nf]) {
+              cost[ns][nxt * 2 + nf] = c;
+              from[ns][nxt * 2 + nf] = last * 2 + lf;
+            }
+          }
+        }
+      }
+    }
+  }
+  const full = S - 1;
+  let bestKey = -1;
+  let bestCost = INF;
+  for (let k = 0; k < n * 2; k++) {
+    const c = cost[full][k];
+    if (c === INF) continue;
+    const total = c + leaveToExit(group[k >> 1], (k & 1) === 1);
+    if (total < bestCost) {
+      bestCost = total;
+      bestKey = k;
+    }
+  }
+  if (bestKey < 0) return greedyColumnOrder(group, entry, toExit);
+  const route: { column: LetterColumn; flip: boolean }[] = [];
+  let set = full;
+  let key = bestKey;
+  while (key >= 0) {
+    route.push({ column: group[key >> 1], flip: (key & 1) === 1 });
+    const prev = from[set][key];
+    set &= ~(1 << (key >> 1));
+    key = prev;
+  }
+  route.reverse();
+  return route;
+}
 
-  const endOf = (c: LetterColumn, flip: boolean) => (flip ? c.a[0] : c.a[c.a.length - 1]);
+/** Nearest-first from every possible starting stroke, for a letter with more
+ * strokes than the exact search is worth running on. */
+function greedyColumnOrder(
+  group: LetterColumn[],
+  entry: Point | null,
+  toExit: (p: Point) => number,
+): { column: LetterColumn; flip: boolean }[] {
+  // A stroke is entered at one end of rail A -- that is where the first
+  // penetration goes -- but it can be left from either rail, since the side the
+  // last penetration lands on is the router's to choose. So the cost of leaving
+  // is the nearer of the two corners at that end.
+  const endsOf = (c: LetterColumn, flip: boolean): Point[] =>
+    flip ? [c.a[0], c.b[0]] : [c.a[c.a.length - 1], c.b[c.b.length - 1]];
   const startOf = (c: LetterColumn, flip: boolean) => (flip ? c.a[c.a.length - 1] : c.a[0]);
   const gap = (p: Point | null, q: Point) => (p ? Math.hypot(p.x - q.x, p.y - q.y) : 0);
-
+  const leave = (c: LetterColumn, flip: boolean, q: Point) =>
+    Math.min(...endsOf(c, flip).map((p) => Math.hypot(p.x - q.x, p.y - q.y)));
+  const leaveToExit = (c: LetterColumn, flip: boolean) =>
+    Math.min(...endsOf(c, flip).map((p) => toExit(p)));
   let best: { route: { column: LetterColumn; flip: boolean }[]; cost: number } | null = null;
-
   for (let first = 0; first < group.length; first++) {
     for (const firstFlip of [false, true]) {
       const remaining = group.map((c, i) => ({ c, i })).filter((e) => e.i !== first);
-      const route: { column: LetterColumn; flip: boolean }[] = [
-        { column: group[first], flip: firstFlip },
-      ];
+      const route = [{ column: group[first], flip: firstFlip }];
       let cost = gap(entry, startOf(group[first], firstFlip));
-      let here = endOf(group[first], firstFlip);
-
+      let hereCol = group[first];
+      let hereFlip = firstFlip;
       while (remaining.length > 0) {
         let pick = 0;
         let pickFlip = false;
         let pickCost = Infinity;
         for (let k = 0; k < remaining.length; k++) {
           for (const f of [false, true]) {
-            const d = gap(here, startOf(remaining[k].c, f));
+            const d = leave(hereCol, hereFlip, startOf(remaining[k].c, f));
             if (d < pickCost) {
               pickCost = d;
               pick = k;
@@ -893,9 +1064,10 @@ function bestColumnOrder(
         const taken = remaining.splice(pick, 1)[0];
         route.push({ column: taken.c, flip: pickFlip });
         cost += pickCost;
-        here = endOf(taken.c, pickFlip);
+        hereCol = taken.c;
+        hereFlip = pickFlip;
       }
-      cost += gap(exit, here);
+      cost += leaveToExit(hereCol, hereFlip);
       if (!best || cost < best.cost) best = { route, cost };
     }
   }
@@ -914,7 +1086,7 @@ export function generateObjectStitches(obj: EmbObject, entry?: Point | null, exi
       // so the whole letter is one continuous run with no trims inside it.
       const breaks = obj.satin.columnBreaks;
       if ((breaks && breaks.length > 0) || (obj.satin.railSplits && obj.satin.railSplits.length > 0)) {
-        return letterStitches(obj);
+        return letterStitches(obj, exit);
       }
       const underlayPts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) =>
         satinUnderlay(flat, obj.satin.width, settings, type),

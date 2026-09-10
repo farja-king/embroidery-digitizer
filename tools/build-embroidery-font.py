@@ -6,7 +6,7 @@ rails, in the exact order the machine sews them. That is what a digitized
 embroidery font is, and it is why letters built from this look like the original
 rather than like an approximation of it.
 """
-import sys, math, json
+import sys, math, json, hashlib
 import pyembroidery as pe
 
 STITCH, JUMP, TRIM, STOP, END, CC = 0, 1, 2, 3, 4, 5
@@ -71,7 +71,9 @@ def plausible_column(col):
     # the other sweeps. Measured as distance walked along each rail, not end to
     # end: a column that closes on itself, like the ring of an "o", starts and
     # finishes in the same place and would look stationary end to end.
-    a, b = col[0::2], col[1::2]
+    a, b = split_rails(col)
+    if len(a) < 2 or len(b) < 2:
+        return False
     walk = lambda r: sum(D(r[i - 1], r[i]) for i in range(1, len(r)))
     la, lb = walk(a), walk(b)
     if max(la, lb) > 1e-6 and min(la, lb) < max(la, lb) * 0.3:
@@ -80,37 +82,45 @@ def plausible_column(col):
 
 
 def split_rails(col):
-    """Separates a column's stitches into its two rails.
+    """The column's two rails, as matched pairs.
 
-    Taking every other point would be the obvious way, and is what the stitches
-    nominally alternate as -- but a single extra stitch anywhere in the column
-    (a tie, a tuck, a lock at a corner) shifts the parity, and from there on the
-    two rails swap over. Drawn as a band that shows up as a bow-tie across the
-    stroke, which is what put starbursts inside the "e", "o" and "s".
+    Consecutive stitches in a satin are the rungs: the needle crosses the
+    stroke, crosses back a fraction further on, and so on. So the pairing is
+    already in the file and does not have to be inferred -- col[0] with col[1],
+    col[2] with col[3], and so on. Measured on the chart, 257 of 258 consecutive
+    distances in its largest column fall between 1.3mm and 1.6mm, which is that
+    column's width.
 
-    Which side of the column a stitch is on does not depend on parity, so that
-    is what decides it: build a rough centreline from consecutive midpoints,
-    then put each point on a rail according to the side of the local direction
-    of travel it falls on."""
-    n = len(col)
-    mids = [((col[i][0] + col[i + 1][0]) / 2, (col[i][1] + col[i + 1][1]) / 2) for i in range(n - 1)]
-    # Smooth the centreline: raw midpoints jitter by half the density.
-    sm = []
-    for i in range(len(mids)):
-        lo = max(0, i - 2)
-        hi = min(len(mids), i + 3)
-        w = mids[lo:hi]
-        sm.append((sum(q[0] for q in w) / len(w), sum(q[1] for q in w) / len(w)))
+    The one exception is what makes this worth writing out. An occasional extra
+    stitch -- a tie, a lock at a corner -- lands on the rail it is already on,
+    and from there the parity is inverted and the two rails swap over for the
+    rest of the column. That shows up as a bow-tie across the stroke, and is
+    what put starbursts inside the "e", "o" and "s". A step like that is short,
+    a fraction of a rung, so it can be spotted and stepped over.
+
+    Keeping the rungs paired is the point of the exercise. Given only two loose
+    rails, anything downstream has to guess which point faces which by walking a
+    fraction along each, and on a curve the outer rail runs ahead of the inner
+    one: the "e" came out with its width swinging between 0.03mm and 0.17mm and
+    the "t" with its two rails touching."""
+    ds = [D(col[i], col[i + 1]) for i in range(len(col) - 1)]
+    if not ds:
+        return [], []
+    med = sorted(ds)[len(ds) // 2]
     a, b = [], []
-    for i, p in enumerate(col):
-        j = min(max(i - 1, 0), len(sm) - 1)
-        j2 = min(j + 1, len(sm) - 1)
-        tx, ty = sm[j2][0] - sm[j][0], sm[j2][1] - sm[j][1]
-        if abs(tx) < 1e-9 and abs(ty) < 1e-9:
-            k = max(0, j - 1)
-            tx, ty = sm[j][0] - sm[k][0], sm[j][1] - sm[k][1]
-        cross = tx * (p[1] - sm[j][1]) - ty * (p[0] - sm[j][0])
-        (a if cross >= 0 else b).append(p)
+    i = 0
+    while i + 1 < len(col):
+        if ds[i] < med * 0.55:
+            i += 1  # a step along a rail, not a rung: skip it and resync
+            continue
+        p, q = col[i], col[i + 1]
+        # Orientation carries over from the rung before, so a rail stays a rail
+        # all the way along instead of flipping side at every stitch.
+        if a and D(a[-1], q) + D(b[-1], p) < D(a[-1], p) + D(b[-1], q):
+            p, q = q, p
+        a.append(p)
+        b.append(q)
+        i += 2
     return a, b
 
 
@@ -137,6 +147,40 @@ def rdp(pts, eps):
     if worst <= eps:
         return [a, b]
     return rdp(pts[: wi + 1], eps)[:-1] + rdp(pts[wi:], eps)
+
+
+def joint_rdp(a, b, eps):
+    """Ramer-Douglas-Peucker over both rails at once.
+
+    Simplifying each rail on its own drops a different set of points from each
+    and the pairing is gone, which is the whole thing worth keeping. Here an
+    index survives on both rails if either rail needs it."""
+    n = len(a)
+    if n < 3:
+        return list(a), list(b)
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        lo, hi = stack.pop()
+        if hi - lo < 2:
+            continue
+        worst, wi = -1.0, -1
+        for r in (a, b):
+            p0, p1 = r[lo], r[hi]
+            dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+            L = math.hypot(dx, dy)
+            for i in range(lo + 1, hi):
+                p = r[i]
+                d = abs(dx * (p0[1] - p[1]) - (p0[0] - p[0]) * dy) / L if L > 1e-9 else D(p, p0)
+                if d > worst:
+                    worst, wi = d, i
+        if worst > eps and wi > lo:
+            keep[wi] = True
+            stack.append((lo, wi))
+            stack.append((wi, hi))
+    idx = [i for i in range(n) if keep[i]]
+    return [a[i] for i in idx], [b[i] for i in idx]
 
 
 def main(path, out_path, name):
@@ -264,8 +308,7 @@ def main(path, out_path, name):
             a, b = split_rails(c)
             if len(a) < 2 or len(b) < 2:
                 continue
-            a = rdp(a, 0.05)
-            b = rdp(b, 0.05)
+            a, b = joint_rdp(a, b, 0.05)
             total_pts += len(a) + len(b)
             conv = lambda pts: [[round((q[0] - x0) * S, 5), round((q[1] - base) * S, 5)] for q in pts]
             out_cols.append({"a": conv(a), "b": conv(b)})
@@ -278,8 +321,16 @@ def main(path, out_path, name):
             "cols": out_cols,
         }
 
+    # A short fingerprint of the geometry. A saved design stores the stamp of
+    # the font its letters were built from, so when the font is rebuilt the app
+    # can tell that the geometry it has is stale and set the words again from
+    # the wording it kept. Without that a design saved today would keep sewing
+    # yesterday's rails for ever.
+    stamp = hashlib.sha1(json.dumps(glyphs, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+
     font = {
         "name": name,
+        "version": stamp,
         "source": "decoded from a stitched alphabet chart",
         "capHeight": round(cap_mm * S, 5),
         "spaceAdvance": round(0.28, 5),
@@ -290,7 +341,7 @@ def main(path, out_path, name):
     if drops:
         print("columns rejected as not real satin:", " ".join(drops))
     print(f"cap height {cap_mm:.2f}mm, letter gap {gap_mm:.2f}mm, em {em_mm:.2f}mm")
-    print(f"wrote {out_path}")
+    print(f"wrote {out_path} (version {stamp})")
 
 
 main(sys.argv[1], sys.argv[2], sys.argv[3])

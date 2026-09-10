@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { BUILT_IN_FONT, rebuildTextObject } from '../text/embroideryFont';
 import type { BackgroundImage, Document, EmbObject, FillParams, Guide, HoopSize, PathPoint, Point, RGB, StitchKind, ToolId } from '../types';
 import { HOOP_PRESETS, defaultTwoPassUnderlay } from '../types';
 import { flattenPath } from '../stitching/geometry';
@@ -356,7 +357,12 @@ function reducer(state: Document, action: Action): Document {
     case 'UPDATE_BACKGROUND':
       return { ...state, background: state.background ? { ...state.background, ...action.patch } : state.background };
     case 'LOAD_DOCUMENT':
-      return { ...action.document, background: action.document.background ?? null, trimThresholdMm: action.document.trimThresholdMm ?? 3 };
+      return {
+        ...action.document,
+        background: action.document.background ?? null,
+        trimThresholdMm: action.document.trimThresholdMm ?? 3,
+        objects: migrateObjects(action.document.objects),
+      };
     case 'CLEAR':
       return { ...initialDocument, objects: [] };
     default:
@@ -487,6 +493,47 @@ const StoreContext = createContext<StoreValue | null>(null);
 
 const STORAGE_KEY = 'embroidery-digitizer-doc';
 
+/** Brings a saved design up to date with the code that will sew it.
+ *
+ * Two kinds of change need this. Settings added since the file was written have
+ * to be filled in, or the object reaches the stitch engine with holes in it.
+ * And a word set from the built-in font stores the geometry it was given at the
+ * time, so when the font itself is rebuilt that geometry is stale -- it would
+ * go on sewing rails that no longer match the font, and the mismatch shows as
+ * a mangled letter rather than as an error. The word keeps its wording, size
+ * and spacing, so it can simply be set again. */
+export function migrateObjects(objects: EmbObject[]): EmbObject[] {
+  return objects.map((o) => {
+    if (o.text && o.text.fontVersion !== BUILT_IN_FONT.version) {
+      return rebuildTextObject(o);
+    }
+    if (o.kind === 'satin' && o.satin.pullCompensation === undefined) {
+      return { ...o, satin: { ...o.satin, pullCompensation: 0.2 } };
+    }
+    if (
+      o.kind === 'fill' &&
+      (o.fill.pullCompensation === undefined ||
+        o.fill.startPoint === undefined ||
+        o.fill.endPoint === undefined ||
+        o.fill.bridgeMode === undefined ||
+        o.fill.guideLine === undefined)
+    ) {
+      return {
+        ...o,
+        fill: {
+          ...o.fill,
+          pullCompensation: o.fill.pullCompensation ?? 0.3,
+          startPoint: o.fill.startPoint ?? null,
+          endPoint: o.fill.endPoint ?? null,
+          bridgeMode: o.fill.bridgeMode ?? 'perimeter',
+          guideLine: o.fill.guideLine ?? null,
+        },
+      };
+    }
+    return o;
+  });
+}
+
 function loadInitial(): Document {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -496,33 +543,7 @@ function loadInitial(): Document {
         ...parsed,
         background: parsed.background ?? null,
         trimThresholdMm: parsed.trimThresholdMm ?? 3,
-        // Docs saved before pullCompensation existed have satin/fill objects missing it.
-        objects: parsed.objects.map((o) => {
-          if (o.kind === 'satin' && o.satin.pullCompensation === undefined) {
-            return { ...o, satin: { ...o.satin, pullCompensation: 0.2 } };
-          }
-          if (
-            o.kind === 'fill' &&
-            (o.fill.pullCompensation === undefined ||
-              o.fill.startPoint === undefined ||
-              o.fill.endPoint === undefined ||
-              o.fill.bridgeMode === undefined ||
-              o.fill.guideLine === undefined)
-          ) {
-            return {
-              ...o,
-              fill: {
-                ...o.fill,
-                pullCompensation: o.fill.pullCompensation ?? 0.3,
-                startPoint: o.fill.startPoint ?? null,
-                endPoint: o.fill.endPoint ?? null,
-                bridgeMode: o.fill.bridgeMode ?? 'perimeter',
-                guideLine: o.fill.guideLine ?? null,
-              },
-            };
-          }
-          return o;
-        }),
+        objects: migrateObjects(parsed.objects),
       };
     }
   } catch {
