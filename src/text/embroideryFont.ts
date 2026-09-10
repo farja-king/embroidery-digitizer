@@ -89,13 +89,91 @@ export interface EmbroideryTextOptions {
   underlayMode?: 'auto' | 'none';
 }
 
-/** Lays out a string and returns one object per character.
+/** Builds the geometry for one word: every column of every letter, end to end,
+ * with the break indices that say where each column starts and where its second
+ * rail begins. */
+function buildWord(
+  word: string,
+  font: EmbroideryFont,
+  sizeMm: number,
+  letterSpacingMm: number,
+  originX: number,
+  originY: number,
+): { points: PathPoint[]; columnBreaks: number[]; railSplits: number[]; width: number } | null {
+  const scale = scaleFor(font, sizeMm);
+  const points: PathPoint[] = [];
+  const columnBreaks: number[] = [];
+  const railSplits: number[] = [];
+  let penX = originX;
+  let firstWidth = 0;
+
+  for (const ch of word) {
+    const glyph = font.glyphs[ch];
+    if (!glyph) continue;
+    for (const col of glyph.cols) {
+      if (col.a.length < 2 || col.b.length < 2) continue;
+      if (points.length > 0) columnBreaks.push(points.length);
+      const startOfColumn = points.length;
+      for (const [gx, gy] of col.a) {
+        points.push({ x: penX + gx * scale, y: originY + gy * scale, type: 'corner' });
+      }
+      railSplits.push(points.length - startOfColumn);
+      for (const [gx, gy] of col.b) {
+        points.push({ x: penX + gx * scale, y: originY + gy * scale, type: 'corner' });
+      }
+      if (firstWidth === 0) firstWidth = columnWidth(col, scale);
+    }
+    penX += glyph.adv * scale + letterSpacingMm;
+  }
+  if (points.length < 4) return null;
+  return { points, columnBreaks, railSplits, width: firstWidth || 1 };
+}
+
+/** How wide a word will be, so the caller can advance the pen without building
+ * the geometry twice. */
+function wordWidth(word: string, font: EmbroideryFont, sizeMm: number, letterSpacingMm: number): number {
+  const scale = scaleFor(font, sizeMm);
+  let w = 0;
+  for (const ch of word) {
+    const glyph = font.glyphs[ch];
+    if (!glyph) continue;
+    w += glyph.adv * scale + letterSpacingMm;
+  }
+  return w;
+}
+
+/** Rebuilds a text object's stitches from what was typed.
  *
- * One object per character, not one per stroke: a letter is a single thing to
- * select and move, and its strokes are stitched in one continuous run with the
- * machine walking between them instead of trimming. Both rails of every column
- * live in the object's own points, so moving, scaling and rotating the letter
- * carries them with it. */
+ * The object remembers the wording, the size and the letter spacing, not just
+ * the geometry those produced, so any of them can be changed afterwards and
+ * the word redrawn -- the way a text box behaves in a drawing program. */
+export function rebuildTextObject(obj: EmbObject, patch: Partial<NonNullable<EmbObject['text']>> = {}): EmbObject {
+  const meta = { ...obj.text!, ...patch };
+  const built = buildWord(meta.value, BUILT_IN_FONT, meta.sizeMm, meta.letterSpacingMm, meta.originX, meta.originY);
+  if (!built) return { ...obj, text: meta };
+  return {
+    ...obj,
+    name: `"${meta.value}"`,
+    points: built.points,
+    text: meta,
+    satin: {
+      ...obj.satin,
+      columnBreaks: built.columnBreaks,
+      railSplits: built.railSplits,
+      width: built.width,
+    },
+  };
+}
+
+/** Lays out a string and returns one object per word.
+ *
+ * A word, not a letter and not a whole line. One object per word means the
+ * word is a single thing to select and to set stitch settings on, and -- the
+ * reason it matters on the machine -- its letters are sewn in one continuous
+ * run with the needle walking between them. As separate objects the thread had
+ * to jump from wherever one letter happened to finish to wherever the next
+ * happened to start, and any jump past the trim threshold makes the machine cut
+ * and re-thread. On a test stitch-out that was five cuts in two words. */
 export function embroideryTextToObjects(opts: EmbroideryTextOptions): EmbObject[] {
   const { text, font, sizeMm, x, y, color } = opts;
   const spacing = opts.letterSpacingMm ?? 0;
@@ -103,43 +181,25 @@ export function embroideryTextToObjects(opts: EmbroideryTextOptions): EmbObject[
   const objects: EmbObject[] = [];
   let penX = x;
 
-  for (const ch of text) {
-    if (ch === ' ') {
-      penX += font.spaceAdvance * scale + spacing;
+  for (const word of text.split(/(\s+)/)) {
+    if (word.length === 0) continue;
+    if (/^\s+$/.test(word)) {
+      penX += word.length * font.spaceAdvance * scale;
       continue;
     }
-    const glyph = font.glyphs[ch];
-    if (!glyph) continue;
+    const built = buildWord(word, font, sizeMm, spacing, penX, y);
+    penX += wordWidth(word, font, sizeMm, spacing);
+    if (!built) continue;
 
-    const points: PathPoint[] = [];
-    const columnBreaks: number[] = [];
-    const railSplits: number[] = [];
-
-    for (const col of glyph.cols) {
-      if (col.a.length < 2 || col.b.length < 2) continue;
-      if (points.length > 0) columnBreaks.push(points.length);
-      const startOfColumn = points.length;
-      for (const [gx, gy] of col.a) {
-        points.push({ x: penX + gx * scale, y: y + gy * scale, type: 'corner' });
-      }
-      railSplits.push(points.length - startOfColumn);
-      for (const [gx, gy] of col.b) {
-        points.push({ x: penX + gx * scale, y: y + gy * scale, type: 'corner' });
-      }
-    }
-    penX += glyph.adv * scale + spacing;
-    if (points.length < 4) continue;
-
-    const obj = defaultObject('satin', points, color);
-    obj.satin.columnBreaks = columnBreaks;
-    obj.satin.railSplits = railSplits;
-    // Nominal width, for the properties panel and for anything that asks
-    // without looking at the rails. The rails are what actually gets stitched.
-    obj.satin.width = columnWidth(glyph.cols[0], scale);
+    const obj = defaultObject('satin', built.points, color);
+    obj.satin.columnBreaks = built.columnBreaks;
+    obj.satin.railSplits = built.railSplits;
+    obj.satin.width = built.width;
     obj.satin.pullCompensation = 0;
     obj.id = makeId();
-    obj.name = `${ch} — "${text}"`;
+    obj.name = `"${word}"`;
     obj.fromText = true;
+    obj.text = { value: word, sizeMm, letterSpacingMm: spacing, originX: penX - wordWidth(word, font, sizeMm, spacing), originY: y };
     if (opts.underlayMode === 'none') {
       const none: UnderlaySettings = { mode: 'manual', type: 'none', spacing: 2.5 };
       obj.satin.underlay = { pass1: none, pass2: none };

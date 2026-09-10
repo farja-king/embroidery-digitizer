@@ -5,6 +5,7 @@ import { autoUnderlayType, normalizeUnderlay } from '../stitching/underlay';
 import { pointsForKindChange } from '../stitching/kindConvert';
 import { flattenPath, rotatePoint } from '../stitching/geometry';
 import { MADEIRA_CLASSIC_40, MADEIRA_POLYNEON } from '../data/threadPalettes';
+import { rebuildTextObject } from '../text/embroideryFont';
 
 const KIND_LABELS: Record<StitchKind, string> = { running: 'Running', satin: 'Satin', fill: 'Fill' };
 
@@ -348,9 +349,47 @@ export default function PropertiesPanel() {
 
   const update = (patch: Partial<EmbObject>) => dispatch({ type: 'UPDATE_OBJECT', id: obj.id, patch });
 
+  // A word keeps what was typed, not just the stitches it produced, so the
+  // wording, the size and the letter spacing stay editable and the word is
+  // redrawn -- the way a text box works in a drawing program.
+  const editText = (patch: Partial<NonNullable<EmbObject['text']>>) => {
+    const rebuilt = rebuildTextObject(obj, patch);
+    update({ name: rebuilt.name, points: rebuilt.points, text: rebuilt.text, satin: rebuilt.satin });
+  };
+
   return (
     <div className="panel">
       <h3>Properties</h3>
+
+      {obj.text && (
+        <div className="text-props">
+          <label className="field">
+            Text
+            <input value={obj.text.value} onChange={(e) => editText({ value: e.target.value })} />
+          </label>
+          <NumberField
+            label="Capital height (mm)"
+            value={obj.text.sizeMm}
+            min={2}
+            max={200}
+            step={0.5}
+            onChange={(v) => editText({ sizeMm: Math.max(2, v) })}
+          />
+          <NumberField
+            label="Letter spacing (mm)"
+            value={obj.text.letterSpacingMm}
+            min={-5}
+            max={20}
+            step={0.1}
+            onChange={(v) => editText({ letterSpacingMm: v })}
+          />
+          <p className="muted small">
+            The whole word is one element, sewn in a single run with the needle walking between letters
+            rather than cutting.
+          </p>
+        </div>
+      )}
+
       <label className="field">
         Name
         <input value={obj.name} onChange={(e) => update({ name: e.target.value })} />

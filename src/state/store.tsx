@@ -45,7 +45,12 @@ export function defaultObject(kind: StitchKind, points: PathPoint[], color: RGB)
     satin: { width: 1, density: 0.36, underlay: defaultTwoPassUnderlay('center-run'), pullCompensation: 0.35 },
     fill: {
       angle: 25,
-      rowSpacing: 0.36,
+      // 0.2mm between rows. Measured off Hatch's own files: its square and its
+      // circle both come out at exactly 0.200mm, and a test stitch-out at 0.36
+      // showed fabric through the fill. Note this is not the same figure as a
+      // satin's density (0.36-0.4) -- a fill's rows are long stitches lying
+      // flat and need to sit closer together than a satin's short ones.
+      rowSpacing: 0.2,
       stitchLength: 3,
       underlay: defaultTwoPassUnderlay('tatami'),
       pullCompensation: 0.3,

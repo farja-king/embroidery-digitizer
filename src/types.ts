@@ -166,6 +166,19 @@ export interface EmbObject {
   // has no effect on stitch order or on the exported file, and it is optional so
   // projects saved before it existed still load.
   groupId?: string;
+  // Set on an object made from typed text with the built-in digitized font.
+  // Keeping what was typed, rather than only the geometry it produced, is what
+  // lets the word stay editable afterwards -- change the wording, the size or
+  // the letter spacing and the stitches are rebuilt, the way a text box works
+  // in a drawing program. One object per word, so a word is a single thing to
+  // select, to set stitch settings on, and to sew without a trim inside it.
+  text?: {
+    value: string;
+    sizeMm: number; // capital height
+    letterSpacingMm: number;
+    originX: number; // baseline start, design mm
+    originY: number;
+  };
 }
 
 export interface HoopSize {
