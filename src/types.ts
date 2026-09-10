@@ -102,6 +102,11 @@ export interface SatinParams {
   // Keeping both rails in `points` means moving, scaling and rotating the
   // object carries them along like any other geometry. One entry per column.
   railSplits?: number[];
+  // Which column each letter of a word starts at. A word is stitched letter by
+  // letter in reading order, but the columns *within* a letter are free to be
+  // taken in whatever order keeps the thread shortest -- so the boundaries have
+  // to be recorded, or reordering would interleave one letter with the next.
+  letterBreaks?: number[];
 }
 
 export interface FillParams {

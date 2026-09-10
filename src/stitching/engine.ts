@@ -685,76 +685,223 @@ function letterStitches(obj: EmbObject): StitchPoint[] {
 /** Stitches a letter whose columns are stored as pairs of rails, in the order
  * the font gives them -- which is the order the original was sewn in -- walking
  * between columns rather than trimming, so the letter is one run of thread. */
+/** Travel from one stroke of a letter to the next without leaving the letter.
+ *
+ * A straight line between two strokes cuts across whatever is between them --
+ * on a letter that means over the counter of an "e" or out through the side of
+ * a "T", where the thread is lying on bare fabric with nothing over it. A
+ * stroke that has just been sewn is a covered path, so the way across is to
+ * walk back along it to the point nearest where the thread has to be, and only
+ * then step off. The step is short and lands under the next stroke.
+ *
+ * `centre` is the centreline of the stroke just finished; `from` is where the
+ * needle is; `to` is where the next stroke starts. */
+function walkWithinLetter(centre: Point[], from: Point, to: Point, step: number): Point[] {
+  if (centre.length < 2) return resamplePath([from, to], step).slice(1);
+  const nearest = (p: Point): number => {
+    let bi = 0;
+    let bd = Infinity;
+    for (let i = 0; i < centre.length; i++) {
+      const d = Math.hypot(centre[i].x - p.x, centre[i].y - p.y);
+      if (d < bd) {
+        bd = d;
+        bi = i;
+      }
+    }
+    return bi;
+  };
+  const start = nearest(from);
+  const finish = nearest(to);
+  const along: Point[] = [];
+  const dir = finish >= start ? 1 : -1;
+  for (let i = start; dir > 0 ? i <= finish : i >= finish; i += dir) along.push(centre[i]);
+
+  // Only worth it if it is actually shorter than going straight -- on two
+  // strokes that already touch, the direct hop is both shorter and inside.
+  const direct = Math.hypot(to.x - from.x, to.y - from.y);
+  let viaLen = 0;
+  const via = [from, ...along, to];
+  for (let i = 1; i < via.length; i++) viaLen += Math.hypot(via[i].x - via[i - 1].x, via[i].y - via[i - 1].y);
+  const path = viaLen <= direct * 1.6 ? via : [from, to];
+  return resamplePath(path, step).slice(1);
+}
+
 function railLetterStitches(obj: EmbObject, splits: number[]): StitchPoint[] {
   const breaks = obj.satin.columnBreaks ?? [];
   const bounds = [0, ...breaks.filter((b) => b > 0 && b < obj.points.length), obj.points.length];
-  const out: StitchPoint[] = [];
-  let cursor: Point | null = null;
 
+  // Pull the columns out first, each as its two rails.
+  const columns: { a: Point[]; b: Point[] }[] = [];
   for (let c = 0; c + 1 < bounds.length; c++) {
     const from = bounds[c];
     const to = bounds[c + 1];
     const split = from + (splits[c] ?? Math.floor((to - from) / 2));
     const a = obj.points.slice(from, split).map((p) => ({ x: p.x, y: p.y }));
     const b = obj.points.slice(split, to).map((p) => ({ x: p.x, y: p.y }));
-    if (a.length < 2 || b.length < 2) continue;
+    if (a.length >= 2 && b.length >= 2) columns.push({ a, b });
+  }
+  if (columns.length === 0) return [];
 
-    // Enter at whichever end of the column is nearer, so the thread never
-    // crosses the letter to start the next stroke.
-    const headGap = cursor ? Math.hypot(a[0].x - cursor.x, a[0].y - cursor.y) : 0;
-    const tailGap = cursor ? Math.hypot(a[a.length - 1].x - cursor.x, a[a.length - 1].y - cursor.y) : 0;
-    const flip = cursor !== null && tailGap < headGap;
-    const ra = flip ? [...a].reverse() : a;
-    const rb = flip ? [...b].reverse() : b;
+  // Letters are stitched in reading order, but the strokes inside a letter are
+  // taken nearest-first. Which stroke to sew next is a free choice -- they all
+  // have to be sewn -- so taking the nearest one, entered at whichever of its
+  // two ends is closer, is always at least as short as the order they happen to
+  // be stored in. Left in stored order the thread crossed back over finished
+  // letters to reach the next stroke.
+  const letterStarts = (obj.satin.letterBreaks ?? [0]).filter((i) => i >= 0 && i < columns.length);
+  const groups: { a: Point[]; b: Point[] }[][] = [];
+  const starts = letterStarts.length > 0 ? letterStarts : [0];
+  for (let g = 0; g < starts.length; g++) {
+    groups.push(columns.slice(starts[g], starts[g + 1] ?? columns.length));
+  }
 
-    if (cursor) {
-      const gap = Math.hypot(ra[0].x - cursor.x, ra[0].y - cursor.y);
-      if (gap > 0.05) {
+  const out: StitchPoint[] = [];
+  let cursor: Point | null = null;
+  // The centreline of the stroke just finished, which is a covered path the
+  // thread can travel back along to reach the next one.
+  let lastCentre: Point[] | null = null;
+
+  for (let gi = 0; gi < groups.length; gi++) {
+    const group = groups[gi];
+    // Where the thread has to be by the end of this letter: the start of the
+    // next one. Without that the letter finishes on whichever stroke greedy
+    // ordering happened to leave until last, which can be the far side, and
+    // the walk to the next letter then crosses back over the whole letter.
+    const nextGroup = groups[gi + 1];
+    const exitTarget = nextGroup ? groupCentre(nextGroup) : null;
+    const order = bestColumnOrder(group, cursor, exitTarget);
+
+    for (const { column, flip } of order) {
+      const ra = flip ? [...column.a].reverse() : column.a;
+      const rb = flip ? [...column.b].reverse() : column.b;
+      const bestDist = cursor ? Math.hypot(ra[0].x - cursor.x, ra[0].y - cursor.y) : 0;
+
+      if (cursor && bestDist > 0.05) {
         const step = Math.max(0.5, obj.running.stitchLength);
-        for (const p of resamplePath([cursor, ra[0]], step).slice(1)) {
-          out.push({ x: p.x, y: p.y, command: 'STITCH' });
+        const route = lastCentre
+          ? walkWithinLetter(lastCentre, cursor, ra[0], step)
+          : resamplePath([cursor, ra[0]], step).slice(1);
+        for (const p of route) out.push({ x: p.x, y: p.y, command: 'STITCH' });
+      }
+
+      const underlayPts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) => {
+        const centre = ra.map((p, i) => {
+          const q = rb[Math.min(i, rb.length - 1)];
+          return { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
+        });
+        const w = Math.hypot(ra[0].x - rb[0].x, ra[0].y - rb[0].y);
+        return satinUnderlay(centre, w, settings, type);
+      });
+      out.push(...underlayPts.map((p) => ({ x: p.x, y: p.y, command: 'STITCH' as const })));
+
+      // The underlay runs the length of the column and finishes at the far end,
+      // so the top stitching starts from whichever end the thread is now at.
+      let sa = ra;
+      let sb = rb;
+      const at = underlayPts[underlayPts.length - 1];
+      if (at) {
+        const toHead = Math.hypot(at.x - sa[0].x, at.y - sa[0].y);
+        const toTail = Math.hypot(at.x - sa[sa.length - 1].x, at.y - sa[sa.length - 1].y);
+        if (toTail < toHead) {
+          sa = [...sa].reverse();
+          sb = [...sb].reverse();
         }
       }
-    }
 
-    const underlayPts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) => {
-      const centre = ra.map((p, i) => {
-        const q = rb[Math.min(i, rb.length - 1)];
+      const col = railStitches(sa, sb, obj.satin.density, obj.satin.pullCompensation ?? 0);
+      out.push(...col);
+      const last = col[col.length - 1];
+      if (last) cursor = { x: last.x, y: last.y };
+      lastCentre = sa.map((p, i) => {
+        const q = sb[Math.min(i, sb.length - 1)];
         return { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
       });
-      const w = Math.hypot(ra[0].x - rb[0].x, ra[0].y - rb[0].y);
-      return satinUnderlay(centre, w, settings, type);
-    });
-    out.push(...underlayPts.map((p) => ({ x: p.x, y: p.y, command: 'STITCH' as const })));
-
-    // The underlay runs the length of the column and finishes at the far end.
-    // Starting the top stitching back at the near end would throw one stitch
-    // the whole length of the stroke to get there, over the underlay it just
-    // laid -- so the column is stitched from whichever end the thread is at.
-    let sa = ra;
-    let sb = rb;
-    const at = underlayPts[underlayPts.length - 1];
-    if (at) {
-      const toHead = Math.hypot(at.x - sa[0].x, at.y - sa[0].y);
-      const toTail = Math.hypot(at.x - sa[sa.length - 1].x, at.y - sa[sa.length - 1].y);
-      if (toTail < toHead) {
-        sa = [...sa].reverse();
-        sb = [...sb].reverse();
-      }
     }
-
-    const col = railStitches(sa, sb, obj.satin.density, obj.satin.pullCompensation ?? 0);
-    out.push(...col);
-    const last = col[col.length - 1];
-    if (last) cursor = { x: last.x, y: last.y };
   }
   return out;
 }
 
-/** `entry` is where the thread already is, from the object stitched before this
- * one. An object with no start point of its own begins near it instead of at
- * whatever corner its scan happens to reach first, which is the difference
- * between a short walk to the next element and a long jump the machine cuts. */
+type LetterColumn = { a: Point[]; b: Point[] };
+
+function groupCentre(group: LetterColumn[]): Point {
+  let x = 0;
+  let y = 0;
+  let n = 0;
+  for (const c of group) {
+    for (const p of c.a) {
+      x += p.x;
+      y += p.y;
+      n++;
+    }
+  }
+  return n ? { x: x / n, y: y / n } : { x: 0, y: 0 };
+}
+
+/** Picks the order to sew a letter's strokes in, and which end to enter each
+ * from, so the thread travels as little as possible -- and, crucially, so the
+ * letter finishes next to whatever comes after it.
+ *
+ * Plain nearest-first gets the first part right and the last part wrong: the
+ * stroke left until last is simply whatever remains, which is often on the far
+ * side, and the walk out of the letter then crosses back over it. Running the
+ * greedy order from every possible starting stroke and scoring each whole route
+ * -- including the walk out at the end -- costs nothing at these sizes (a
+ * letter is a handful of strokes) and picks a route that both starts and
+ * finishes where it should. */
+function bestColumnOrder(
+  group: LetterColumn[],
+  entry: Point | null,
+  exit: Point | null,
+): { column: LetterColumn; flip: boolean }[] {
+  if (group.length <= 1) {
+    if (group.length === 0) return [];
+    const c = group[0];
+    const head = entry ? Math.hypot(c.a[0].x - entry.x, c.a[0].y - entry.y) : 0;
+    const tail = entry ? Math.hypot(c.a[c.a.length - 1].x - entry.x, c.a[c.a.length - 1].y - entry.y) : 0;
+    return [{ column: c, flip: entry !== null && tail < head }];
+  }
+
+  const endOf = (c: LetterColumn, flip: boolean) => (flip ? c.a[0] : c.a[c.a.length - 1]);
+  const startOf = (c: LetterColumn, flip: boolean) => (flip ? c.a[c.a.length - 1] : c.a[0]);
+  const gap = (p: Point | null, q: Point) => (p ? Math.hypot(p.x - q.x, p.y - q.y) : 0);
+
+  let best: { route: { column: LetterColumn; flip: boolean }[]; cost: number } | null = null;
+
+  for (let first = 0; first < group.length; first++) {
+    for (const firstFlip of [false, true]) {
+      const remaining = group.map((c, i) => ({ c, i })).filter((e) => e.i !== first);
+      const route: { column: LetterColumn; flip: boolean }[] = [
+        { column: group[first], flip: firstFlip },
+      ];
+      let cost = gap(entry, startOf(group[first], firstFlip));
+      let here = endOf(group[first], firstFlip);
+
+      while (remaining.length > 0) {
+        let pick = 0;
+        let pickFlip = false;
+        let pickCost = Infinity;
+        for (let k = 0; k < remaining.length; k++) {
+          for (const f of [false, true]) {
+            const d = gap(here, startOf(remaining[k].c, f));
+            if (d < pickCost) {
+              pickCost = d;
+              pick = k;
+              pickFlip = f;
+            }
+          }
+        }
+        const taken = remaining.splice(pick, 1)[0];
+        route.push({ column: taken.c, flip: pickFlip });
+        cost += pickCost;
+        here = endOf(taken.c, pickFlip);
+      }
+      cost += gap(exit, here);
+      if (!best || cost < best.cost) best = { route, cost };
+    }
+  }
+  return best!.route;
+}
+
 export function generateObjectStitches(obj: EmbObject, entry?: Point | null, exit?: Point | null): StitchPoint[] {
   if (!obj.visible || obj.points.length < 2) return [];
   const flat = flattenPath(obj.points, obj.kind === 'fill');

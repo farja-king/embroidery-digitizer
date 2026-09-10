@@ -99,17 +99,19 @@ function buildWord(
   letterSpacingMm: number,
   originX: number,
   originY: number,
-): { points: PathPoint[]; columnBreaks: number[]; railSplits: number[]; width: number } | null {
+): { points: PathPoint[]; columnBreaks: number[]; railSplits: number[]; letterBreaks: number[]; width: number } | null {
   const scale = scaleFor(font, sizeMm);
   const points: PathPoint[] = [];
   const columnBreaks: number[] = [];
   const railSplits: number[] = [];
+  const letterBreaks: number[] = [];
   let penX = originX;
   let firstWidth = 0;
 
   for (const ch of word) {
     const glyph = font.glyphs[ch];
     if (!glyph) continue;
+    letterBreaks.push(railSplits.length);
     for (const col of glyph.cols) {
       if (col.a.length < 2 || col.b.length < 2) continue;
       if (points.length > 0) columnBreaks.push(points.length);
@@ -126,7 +128,7 @@ function buildWord(
     penX += glyph.adv * scale + letterSpacingMm;
   }
   if (points.length < 4) return null;
-  return { points, columnBreaks, railSplits, width: firstWidth || 1 };
+  return { points, columnBreaks, railSplits, letterBreaks, width: firstWidth || 1 };
 }
 
 /** How wide a word will be, so the caller can advance the pen without building
@@ -160,6 +162,7 @@ export function rebuildTextObject(obj: EmbObject, patch: Partial<NonNullable<Emb
       ...obj.satin,
       columnBreaks: built.columnBreaks,
       railSplits: built.railSplits,
+      letterBreaks: built.letterBreaks,
       width: built.width,
     },
   };
@@ -194,6 +197,7 @@ export function embroideryTextToObjects(opts: EmbroideryTextOptions): EmbObject[
     const obj = defaultObject('satin', built.points, color);
     obj.satin.columnBreaks = built.columnBreaks;
     obj.satin.railSplits = built.railSplits;
+    obj.satin.letterBreaks = built.letterBreaks;
     obj.satin.width = built.width;
     obj.satin.pullCompensation = 0;
     obj.id = makeId();
