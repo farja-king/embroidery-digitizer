@@ -8,10 +8,13 @@ import type { Point } from '../types';
 export interface Stroke {
   centerline: Point[];
   width: number;
-  // Half-width at each centreline point, so the column can follow a stroke that
-  // tapers or is cut flat at an angle instead of being a constant-width band
-  // that spills out of the letter at every end. Same length as `centerline`.
-  halfWidths: number[];
+  // How far the letterform reaches either side of each centreline point,
+  // measured along that point's own normal. Two independent numbers because a
+  // skeleton does not sit exactly halfway across a curved stroke: on the ring of
+  // an "o" it runs nearer the inside, so a symmetric column either falls short
+  // of the outer edge or spills past the inner one. Same length as `centerline`.
+  leftWidths: number[];
+  rightWidths: number[];
 }
 
 // Working resolution for the raster stage, in samples per millimetre. High
@@ -455,6 +458,24 @@ function extendToEdge(path: Point[], r: Raster, maxMm: number): Point[] {
   return [head, ...path.slice(1, -1), tail];
 }
 
+/** Walks from `p` in direction (dx, dy) until it leaves the shape, and returns
+ * how far it got. This is the distance to the letter's edge along that exact
+ * direction, which is what a satin rail needs. */
+function marchToEdge(p: Point, dx: number, dy: number, r: Raster): number {
+  const step = 1 / r.scale;
+  const limit = 200;
+  let last = 0;
+  for (let k = 1; k <= limit; k++) {
+    const d = k * step;
+    const px = Math.round((p.x + dx * d - r.originX) * r.scale - 0.5);
+    const py = Math.round((p.y + dy * d - r.originY) * r.scale - 0.5);
+    if (px < 0 || py < 0 || px >= r.w || py >= r.h) break;
+    if (!r.inside[py * r.w + px]) break;
+    last = d;
+  }
+  return last + step / 2;
+}
+
 /** How much of the glyph the proposed columns would actually cover.
  *
  * A satin column is a constant-width band down a centreline, and a letter is
@@ -471,7 +492,9 @@ function coverageOf(strokes: Stroke[], r: Raster, extraMm: number): number {
       // Include the pull compensation the column will really be stitched with:
       // the rails sit a little proud of the outline on purpose, and judging
       // coverage without it understates what actually lands on the fabric.
-      const half = ((st.halfWidths[i - 1] + st.halfWidths[i]) / 2 + extraMm) * r.scale;
+      const half =
+        ((st.leftWidths[i - 1] + st.leftWidths[i] + st.rightWidths[i - 1] + st.rightWidths[i]) / 4 + extraMm) *
+        r.scale;
       const a = st.centerline[i - 1];
       const b = st.centerline[i];
       const ax = (a.x - r.originX) * r.scale;
@@ -593,26 +616,39 @@ export function glyphToStrokes(
     if (mm.length < 2) continue;
     mm = extendToEdge(mm, r, width * 0.75);
 
-    // How far the letter actually extends either side of each point. Taken from
-    // the distance transform, so the column inscribes the stroke rather than
-    // approximating it: it reaches the edge where the stroke is full width and
-    // pulls in where it tapers or ends.
-    const halfWidths = mm.map((p) => {
-      const px = (p.x - r.originX) * r.scale - 0.5;
-      const py = (p.y - r.originY) * r.scale - 0.5;
-      const i = Math.round(py) * r.w + Math.round(px);
-      const d = i >= 0 && i < dist.length ? dist[i] / r.scale : 0;
-      return Math.max(0.1, d);
+    // How far the letter reaches either side, measured by walking out along each
+    // point's own normal until leaving the shape. The distance transform will
+    // not do for this: it reports the radius of the largest circle that fits,
+    // which on a curve is the distance to the *nearer* edge in any direction,
+    // not the distance to each edge along the normal. Using it left the column
+    // narrower than the stroke and drifting off centre, so the rails wandered in
+    // and out of the letterform all the way round a curve like an "o".
+    const rays = mm.map((p, i) => {
+      const a = mm[Math.max(0, i - 1)];
+      const b = mm[Math.min(mm.length - 1, i + 1)];
+      const tx = b.x - a.x;
+      const ty = b.y - a.y;
+      const tl = Math.hypot(tx, ty) || 1;
+      const nx = -ty / tl;
+      const ny = tx / tl;
+      return { left: marchToEdge(p, nx, ny, r), right: marchToEdge(p, -nx, -ny, r) };
     });
-    // A single stray sample (right at a junction, or one pixel outside at an
-    // extended end) would put a notch in the column's edge; a light smoothing
-    // keeps the rail continuous without losing the taper.
-    const smoothedHalf = halfWidths.map((_, i) => {
-      const a = halfWidths[Math.max(0, i - 1)];
-      const b = halfWidths[i];
-      const c = halfWidths[Math.min(halfWidths.length - 1, i + 1)];
-      return (a + b * 2 + c) / 4;
-    });
+    // A ray that slips through a junction or out of an open end returns a wild
+    // distance; a light smoothing plus a ceiling relative to the stroke's own
+    // width keeps the rail continuous and stops a single bad sample throwing a
+    // spike out of the side of the letter.
+    const ceiling = width * 1.1;
+    const clean = (vals: number[]): number[] => {
+      const capped = vals.map((v) => Math.min(Math.max(v, 0.05), ceiling));
+      return capped.map((_, i) => {
+        const a = capped[Math.max(0, i - 1)];
+        const b = capped[i];
+        const c = capped[Math.min(capped.length - 1, i + 1)];
+        return (a + b * 2 + c) / 4;
+      });
+    };
+    const leftWidths = clean(rays.map((q) => q.left));
+    const rightWidths = clean(rays.map((q) => q.right));
 
     // Square off the two ends. Distance to the boundary necessarily falls to
     // nothing at the tip of a stroke, so a column that follows it tapers to a
@@ -621,28 +657,28 @@ export function glyphToStrokes(
     // that alone was most of the missing coverage. Hold the width from one
     // half-width in, out to the end, so the column finishes with a flat edge the
     // same shape as the letter's own.
-    const holdFrom = (fromStart: boolean) => {
-      const n = smoothedHalf.length;
-      const endIdx = fromStart ? 0 : n - 1;
-      const target = smoothedHalf[endIdx];
+    const holdFrom = (vals: number[], fromStart: boolean) => {
+      const n = vals.length;
       let walked = 0;
       for (let k = 1; k < n; k++) {
         const i = fromStart ? k : n - 1 - k;
         const j = fromStart ? k - 1 : n - k;
         walked += Math.hypot(mm[i].x - mm[j].x, mm[i].y - mm[j].y);
-        if (walked >= Math.max(target, smoothedHalf[i])) {
+        if (walked >= vals[i]) {
           for (let q = 0; q < k; q++) {
             const idx = fromStart ? q : n - 1 - q;
-            smoothedHalf[idx] = Math.max(smoothedHalf[idx], smoothedHalf[i]);
+            vals[idx] = Math.max(vals[idx], vals[i]);
           }
           return;
         }
       }
     };
-    holdFrom(true);
-    holdFrom(false);
+    holdFrom(leftWidths, true);
+    holdFrom(leftWidths, false);
+    holdFrom(rightWidths, true);
+    holdFrom(rightWidths, false);
 
-    strokes.push({ centerline: mm, width, halfWidths: smoothedHalf });
+    strokes.push({ centerline: mm, width, leftWidths, rightWidths });
   }
 
   if (strokes.length === 0) return null;

@@ -228,12 +228,40 @@ export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
     for (const island of islands) {
       if (island.outer.length < 3) continue;
 
-      // A digitized letter is a set of satin strokes, one per stroke of the
-      // letterform, each running along its own direction -- that is what makes
-      // the stitches in an "A" turn to follow the two legs and the bar instead
-      // of all lying one way. glyphToStrokes recovers those strokes from the
-      // outline; see there for how, and for why it reports how much of the
-      // glyph the strokes would actually cover.
+      // A ring or a plain stroke is handled exactly, before anything is
+      // approximated. For an "o" or a "D" the outer and inner contours ARE the
+      // two rails of the column, and for a simple stroke the two sides are, so
+      // pairing them directly puts the rails exactly on the letterform. Running
+      // those through the skeleton decomposition instead cut the ring into arcs
+      // and rebuilt approximate rails from a raster, which closed up the
+      // counter of an "o" and left the edges scalloped.
+      const exact =
+        stitchStyle === 'satin-auto'
+          ? island.holes.length === 1
+            ? ringToSatin(island.outer, island.holes[0])
+            : island.holes.length === 0
+              ? ribbonToSatin(island.outer)
+              : null
+          : null;
+      if (exact) {
+        const points: PathPoint[] = exact.centerline.map((p) => ({ x: p.x, y: p.y, type: 'corner' }));
+        const obj = defaultObject('satin', points, color);
+        obj.satin.width = exact.width;
+        obj.satin.pullCompensation = TEXT_PULL_COMPENSATION_MM;
+        obj.id = makeId();
+        obj.name = `${char} — "${text}"`;
+        obj.fromText = true;
+        applyUnderlayMode(obj, opts.underlayMode);
+        objects.push(obj);
+        continue;
+      }
+
+      // Everything else -- a branching letter like "A", "E", "k" -- has its
+      // strokes recovered from the outline, one satin column per stroke of the
+      // letterform, each running along its own direction. That is what makes
+      // the stitches in an "A" follow the two legs and the bar instead of all
+      // lying one way. See glyphToStrokes for how, and for why it reports how
+      // much of the glyph the strokes would actually cover.
       const decomposed =
         stitchStyle === 'satin-auto'
           ? glyphToStrokes([island.outer, ...island.holes], TEXT_PULL_COMPENSATION_MM)
@@ -247,13 +275,15 @@ export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
         const points: PathPoint[] = [];
         const columnBreaks: number[] = [];
         const columnWidths: number[] = [];
-        const pointHalfWidths: number[] = [];
+        const railLeft: number[] = [];
+        const railRight: number[] = [];
         for (const stroke of decomposed.strokes) {
           if (points.length > 0) columnBreaks.push(points.length);
           columnWidths.push(stroke.width);
           stroke.centerline.forEach((p, k) => {
             points.push({ x: p.x, y: p.y, type: 'corner' });
-            pointHalfWidths.push(stroke.halfWidths[k] ?? stroke.width / 2);
+            railLeft.push(stroke.leftWidths[k] ?? stroke.width / 2);
+            railRight.push(stroke.rightWidths[k] ?? stroke.width / 2);
           });
         }
         if (points.length < 2) continue;
@@ -261,7 +291,8 @@ export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
         obj.satin.width = columnWidths[0];
         obj.satin.columnBreaks = columnBreaks;
         obj.satin.columnWidths = columnWidths;
-        obj.satin.pointHalfWidths = pointHalfWidths;
+        obj.satin.pointRailLeft = railLeft;
+        obj.satin.pointRailRight = railRight;
         // Compensation is a fixed millimetre figure meant for a hand-drawn
         // column. Letter strokes are far narrower, and the default would widen
         // them by most of their own width, so lettering asks for much less.
@@ -275,29 +306,13 @@ export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
       }
 
       // Nothing stroke-like came out, or the strokes would have left too much of
-      // the glyph bare. A single clean column still covers some shapes (a comma,
-      // a slash, a simple ring), so try that before giving up on satin.
-      const satin =
-        stitchStyle === 'satin-auto'
-          ? island.holes.length === 0
-            ? ribbonToSatin(island.outer)
-            : island.holes.length === 1
-              ? ringToSatin(island.outer, island.holes[0])
-              : null
-          : null;
-
-      let obj: EmbObject;
-      if (satin) {
-        const points: PathPoint[] = satin.centerline.map((p) => ({ x: p.x, y: p.y, type: 'corner' }));
-        obj = defaultObject('satin', points, color);
-        obj.satin.width = satin.width;
-      } else {
-        const poly = islandToFillPolygon(island);
-        if (poly.length < 3) continue;
-        const points: PathPoint[] = poly.map((p) => ({ x: p.x, y: p.y, type: 'corner' }));
-        obj = defaultObject('fill', points, color);
-        obj.fill.angle = estimateAngle(poly);
-      }
+      // the glyph bare. A fill covers by construction, which beats a satin that
+      // leaves fabric showing through.
+      const poly = islandToFillPolygon(island);
+      if (poly.length < 3) continue;
+      const fillPoints: PathPoint[] = poly.map((p) => ({ x: p.x, y: p.y, type: 'corner' }));
+      const obj = defaultObject('fill', fillPoints, color);
+      obj.fill.angle = estimateAngle(poly);
       obj.id = makeId();
       obj.name = `Text "${text}"`;
       obj.fromText = true; // drives the lettering-specific automatic underlay

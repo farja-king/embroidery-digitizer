@@ -88,11 +88,13 @@ export interface SatinParams {
   // letter's strokes are not all the same thickness. Falls back to `width` for
   // any column it does not cover.
   columnWidths?: number[];
-  // Half-width at each point of `points`, when the column is not a constant
-  // width. A letter stroke tapers and its ends are cut flat, so a fixed-width
-  // band spills outside the letterform at every terminal; these let each rail
-  // follow the shape it belongs to. Same length as `points` when present.
-  pointHalfWidths?: number[];
+  // How far the column reaches either side of each point of `points`, when it
+  // is not a plain constant-width band. Two independent numbers per point
+  // because a letter stroke is rarely symmetric about its own centreline -- on
+  // the ring of an "o" the centre runs nearer the inside, so one rail has
+  // further to go than the other. Same length as `points` when present.
+  pointRailLeft?: number[];
+  pointRailRight?: number[];
 }
 
 export interface FillParams {
