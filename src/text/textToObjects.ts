@@ -2,9 +2,16 @@ import type * as opentype from 'opentype.js';
 import { dist, pointInPolygon, polygonArea } from '../stitching/geometry';
 import { defaultObject, makeId } from '../state/store';
 import { ribbonToSatin, ringToSatin } from './letterToSatin';
+import { glyphToStrokes } from './glyphToStrokes';
 import type { EmbObject, PathPoint, Point, RGB, UnderlaySettings } from '../types';
 
-const CURVE_SEGMENTS = 8; // per bezier curve -- plenty smooth at typical lettering sizes
+const CURVE_SEGMENTS = 8;
+
+// How much of a glyph the stroke decomposition has to cover before it is used.
+// Below this the strokes are leaving enough of the letter bare that a plain
+// fill -- which covers by construction -- is the better answer, even though it
+// stitches the whole letter in one direction.
+const MIN_STROKE_COVERAGE = 0.9; // per bezier curve -- plenty smooth at typical lettering sizes
 
 /** Flattens one opentype.Path (already scaled + positioned in design-space mm)
  * into closed-contour point lists. A glyph's path can contain more than one
@@ -213,6 +220,36 @@ export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
     for (const island of islands) {
       if (island.outer.length < 3) continue;
 
+      // A digitized letter is a set of satin strokes, one per stroke of the
+      // letterform, each running along its own direction -- that is what makes
+      // the stitches in an "A" turn to follow the two legs and the bar instead
+      // of all lying one way. glyphToStrokes recovers those strokes from the
+      // outline; see there for how, and for why it reports how much of the
+      // glyph the strokes would actually cover.
+      const decomposed =
+        stitchStyle === 'satin-auto' ? glyphToStrokes([island.outer, ...island.holes]) : null;
+
+      if (decomposed && decomposed.coverage >= MIN_STROKE_COVERAGE) {
+        // One group per letter, so the strokes of a glyph select and move as the
+        // single thing a reader thinks of them as.
+        const groupId = makeId();
+        for (const stroke of decomposed.strokes) {
+          const points: PathPoint[] = stroke.centerline.map((p) => ({ x: p.x, y: p.y, type: 'corner' }));
+          const obj = defaultObject('satin', points, color);
+          obj.satin.width = stroke.width;
+          obj.id = makeId();
+          obj.name = `Text "${text}"`;
+          obj.fromText = true;
+          obj.groupId = groupId;
+          applyUnderlayMode(obj, opts.underlayMode);
+          objects.push(obj);
+        }
+        continue;
+      }
+
+      // Nothing stroke-like came out, or the strokes would have left too much of
+      // the glyph bare. A single clean column still covers some shapes (a comma,
+      // a slash, a simple ring), so try that before giving up on satin.
       const satin =
         stitchStyle === 'satin-auto'
           ? island.holes.length === 0
