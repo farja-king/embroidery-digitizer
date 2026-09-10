@@ -604,7 +604,11 @@ function railStitches(
     if (dAlt < dEnd) steps += 1;
   }
   const comp = Math.max(0, pullCompensation);
+  // How close two holes on one edge may come before the inner one is shortened.
+  const minGap = Math.max(0.15, density * 0.5);
   const out: StitchPoint[] = [];
+  let lastA: Point | null = null;
+  let lastB: Point | null = null;
   let j = 1;
   for (let k = 0; k < steps; k++) {
     const t = (total * k) / (steps - 1);
@@ -632,7 +636,46 @@ function railStitches(
     // back across -- and that hair is a 0.35mm stitch on every other
     // penetration. Machines break thread on stitches that short or drop them,
     // and half of ours were under 0.6mm against Hatch's 0.6 per cent.
-    out.push(k % 2 === 0 ? { x: ax, y: ay, command: 'STITCH' } : { x: bx, y: by, command: 'STITCH' });
+    const onA = k % 2 === 0;
+    let px = onA ? ax : bx;
+    let py = onA ? ay : by;
+    const qx = onA ? bx : ax;
+    const qy = onA ? by : ay;
+    const last = onA ? lastA : lastB;
+
+    // Short stitches, on the inside of a curve.
+    //
+    // The spacing is set from the longer edge, so the outer edge of a curve is
+    // covered without gaps. The inner edge then has less distance to cover in
+    // the same number of steps, and its holes crowd: round the bowl of an "e"
+    // they closed to 0.09mm, a quarter of the 0.36mm asked for, which is a row
+    // of perforations rather than a line of stitching. So where a hole would
+    // land too close to the one before it on that edge, it is pulled back
+    // along the stitch towards the far edge until it is clear -- at most half
+    // way, which is as short as a stitch can be without leaving the edge bare.
+    // The thread still crosses, the coverage is unchanged, and the fabric is
+    // not cut. The two ends are left alone: those corners are where the next
+    // stroke is measured from.
+    if (last && k > 0 && k < steps - 1) {
+      const d0 = Math.hypot(px - last.x, py - last.y);
+      if (d0 < minGap) {
+        let lo = 0;
+        let hi = 0.5;
+        for (let it = 0; it < 12; it++) {
+          const m = (lo + hi) / 2;
+          const cx = px + (qx - px) * m;
+          const cy = py + (qy - py) * m;
+          if (Math.hypot(cx - last.x, cy - last.y) < minGap) lo = m;
+          else hi = m;
+        }
+        px += (qx - px) * hi;
+        py += (qy - py) * hi;
+      }
+    }
+    const pen = { x: px, y: py };
+    if (onA) lastA = pen;
+    else lastB = pen;
+    out.push({ x: px, y: py, command: 'STITCH' });
   }
   return out;
 }
@@ -765,19 +808,47 @@ function walkWithinLetter(centre: Point[], from: Point, to: Point, step: number)
   return resamplePath(path, step).slice(1);
 }
 
+/** Whether this stroke's underlay finishes at the far end.
+ *
+ * A pass that runs the length of the stroke once -- a centre run, a single
+ * zigzag -- leaves the needle down there, and the top stitching then comes
+ * back over it, so the stroke ends where the thread arrived. A pass that goes
+ * out and back leaves it at the near end and the top stitching runs away. The
+ * answer does not depend on which way round the stroke is sewn, so it can be
+ * settled once from the stored geometry, before any routing. */
+function underlayEndsFar(obj: EmbObject, a: Point[], b: Point[]): boolean {
+  const centre = a.map((p, i) => {
+    const q = b[Math.min(i, b.length - 1)];
+    return { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
+  });
+  const width = Math.hypot(a[0].x - b[0].x, a[0].y - b[0].y);
+  const pts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) =>
+    satinUnderlay(centre, width, settings, type),
+  );
+  const at = pts[pts.length - 1];
+  if (!at) return false;
+  const head = centre[0];
+  const tail = centre[centre.length - 1];
+  return Math.hypot(at.x - tail.x, at.y - tail.y) < Math.hypot(at.x - head.x, at.y - head.y);
+}
+
 function railLetterStitches(obj: EmbObject, splits: number[], exit?: Point | null): StitchPoint[] {
   const breaks = obj.satin.columnBreaks ?? [];
   const bounds = [0, ...breaks.filter((b) => b > 0 && b < obj.points.length), obj.points.length];
 
-  // Pull the columns out first, each as its two rails.
-  const columns: { a: Point[]; b: Point[] }[] = [];
+  // Pull the columns out first, each as its two rails, and work out for each
+  // whether its underlay will turn the top stitching round. Which end a stroke
+  // finishes at is what the router is choosing between, so it has to be known
+  // before the route is picked rather than discovered while sewing it.
+  const columns: LetterColumn[] = [];
   for (let c = 0; c + 1 < bounds.length; c++) {
     const from = bounds[c];
     const to = bounds[c + 1];
     const split = from + (splits[c] ?? Math.floor((to - from) / 2));
     const a = obj.points.slice(from, split).map((p) => ({ x: p.x, y: p.y }));
     const b = obj.points.slice(split, to).map((p) => ({ x: p.x, y: p.y }));
-    if (a.length >= 2 && b.length >= 2) columns.push({ a, b });
+    if (a.length < 2 || b.length < 2) continue;
+    columns.push({ a, b, returnsToStart: underlayEndsFar(obj, a, b) });
   }
   if (columns.length === 0) return [];
 
@@ -872,11 +943,33 @@ function railLetterStitches(obj: EmbObject, splits: number[], exit?: Point | nul
   return out;
 }
 
-type LetterColumn = { a: Point[]; b: Point[] };
+type LetterColumn = {
+  a: Point[];
+  b: Point[];
+  /** Whether the top stitching will finish back at the end it started from.
+   *
+   * An underlay that runs the length of the stroke once leaves the thread at
+   * the far end, so the top stitching comes back over it and the stroke ends
+   * where it began. One that goes out and back leaves it at the near end, and
+   * the top stitching then runs away from it. Either is fine, but the router
+   * has to know which: it is choosing where each stroke finishes so the join
+   * to the next one is as short as possible, and if the underlay silently
+   * turns the stroke round afterwards every one of those choices is wrong.
+   * That is why switching the underlay on used to move all the joins. */
+  returnsToStart?: boolean;
+};
 
 /** The two corners at the end a stroke will be left from. */
 function endsOfColumn(c: LetterColumn, flip: boolean): Point[] {
-  return flip ? [c.a[0], c.b[0]] : [c.a[c.a.length - 1], c.b[c.b.length - 1]];
+  const head = [c.a[0], c.b[0]];
+  const tail = [c.a[c.a.length - 1], c.b[c.b.length - 1]];
+  if (c.returnsToStart) return flip ? tail : head;
+  return flip ? head : tail;
+}
+
+/** The two corners the needle arrives at. */
+function startsOfColumn(c: LetterColumn, flip: boolean): Point[] {
+  return flip ? [c.a[c.a.length - 1], c.b[c.b.length - 1]] : [c.a[0], c.b[0]];
 }
 
 /** Whichever of `targets` is closest to any of `from`, or null if there are
@@ -935,9 +1028,8 @@ function bestColumnOrder(
   // penetrations land on is the router's to set. So the cost of arriving at a
   // stroke, or leaving it, is the nearer of the two corners there, not the
   // distance to rail A alone.
-  const endsOf = (c: LetterColumn, flip: boolean): Point[] =>
-    flip ? [c.a[0], c.b[0]] : [c.a[c.a.length - 1], c.b[c.b.length - 1]];
-  const startsOf = (c: LetterColumn, flip: boolean): Point[] => endsOf(c, !flip);
+  const endsOf = endsOfColumn;
+  const startsOf = startsOfColumn;
   const gap = (p: Point | null, c: LetterColumn, flip: boolean) =>
     p === null ? 0 : Math.min(...startsOf(c, flip).map((q) => Math.hypot(p.x - q.x, p.y - q.y)));
   const hop = (c: LetterColumn, flip: boolean, d: LetterColumn, dflip: boolean) => {

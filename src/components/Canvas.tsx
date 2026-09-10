@@ -1656,30 +1656,43 @@ function drawObject(
     // A letter from the digitized font stores each column as its two edges, so
     // it is drawn as the band between them rather than as a line down a
     // centreline that does not exist.
+    //
+    // Rung by rung, not as one outline. The edges are stored paired -- rail A
+    // point i faces rail B point i, the way the needle crossed -- so the band
+    // is exactly the run of four-sided patches between successive pairs. Going
+    // out along one edge and back along the other to make a single outline
+    // looks equivalent and is not: on a stroke that curves as hard as the bowl
+    // of an "e" or the spine of an "s" that outline crosses itself, and the
+    // fill then leaves spikes and gaps across the middle of the letter. They
+    // were only ever in the drawing -- measured against the stitches, no thread
+    // runs there -- but they are alarming to look at.
     if (splits && splits.length > 0) {
       ctx.fillStyle = color;
       ctx.globalAlpha = 0.55;
+      ctx.beginPath();
       for (let c = 0; c + 1 < bounds.length; c++) {
         const from = bounds[c];
         const to = bounds[c + 1];
         const split = from + (splits[c] ?? Math.floor((to - from) / 2));
         const railA = obj.points.slice(from, split);
         const railB = obj.points.slice(split, to);
-        if (railA.length < 2 || railB.length < 2) continue;
-        ctx.beginPath();
-        const first = toScreen(railA[0]);
-        ctx.moveTo(first.x, first.y);
-        for (let i = 1; i < railA.length; i++) {
-          const sp = toScreen(railA[i]);
-          ctx.lineTo(sp.x, sp.y);
+        const n = Math.min(railA.length, railB.length);
+        if (n < 2) continue;
+        for (let i = 0; i + 1 < n; i++) {
+          const a0 = toScreen(railA[i]);
+          const b0 = toScreen(railB[i]);
+          const b1 = toScreen(railB[i + 1]);
+          const a1 = toScreen(railA[i + 1]);
+          ctx.moveTo(a0.x, a0.y);
+          ctx.lineTo(b0.x, b0.y);
+          ctx.lineTo(b1.x, b1.y);
+          ctx.lineTo(a1.x, a1.y);
+          ctx.closePath();
         }
-        for (let i = railB.length - 1; i >= 0; i--) {
-          const sp = toScreen(railB[i]);
-          ctx.lineTo(sp.x, sp.y);
-        }
-        ctx.closePath();
-        ctx.fill();
       }
+      // One fill for the lot, so patches that touch do not seam and patches
+      // that overlap do not double in strength.
+      ctx.fill();
       ctx.globalAlpha = 1;
       if (selected) {
         for (const p of obj.points) drawVertexMarker(ctx, toScreen(p), p.type, '#2f6fed', '#ffffff');

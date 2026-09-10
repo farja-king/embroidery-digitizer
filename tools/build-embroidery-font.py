@@ -149,6 +149,43 @@ def rdp(pts, eps):
     return rdp(pts[: wi + 1], eps)[:-1] + rdp(pts[wi:], eps)
 
 
+def unshorten(a, b, rounds=3):
+    """Puts back the edge that the chart's own short stitches pulled in.
+
+    On the inside of a tight turn a digitizer does not send every penetration
+    to the inner edge -- holes that close together tear the fabric -- so some
+    are pulled back into the body of the stroke. Read straight out of the file
+    those shortened stitches look like an edge that wobbles in and out by half
+    a millimetre. The "t" of "Test" had four in a row, and the tail drawn from
+    them came out as a fan from a pivot with a notch missing.
+
+    A point that sits inside the line between its own two neighbours is put
+    back on that line. It only ever moves outward to the edge, never past it,
+    and on a smoothly curving edge the correction is a hundredth of a
+    millimetre, so a real curve is left alone. What this buys is a clean
+    separation: the font holds the shape of the stroke, and whether a stitch
+    needs shortening is decided when it is sewn, from the density in force at
+    that size, rather than inherited from a chart stitched at another one."""
+    a = [list(p) for p in a]
+    b = [list(p) for p in b]
+    for _ in range(rounds):
+        for r, other in ((a, b), (b, a)):
+            for i in range(1, len(r) - 1):
+                p0, p1, p2 = r[i - 1], r[i], r[i + 1]
+                dx, dy = p2[0] - p0[0], p2[1] - p0[1]
+                L2 = dx * dx + dy * dy
+                if L2 < 1e-12:
+                    continue
+                t = ((p1[0] - p0[0]) * dx + (p1[1] - p0[1]) * dy) / L2
+                t = min(1.0, max(0.0, t))
+                qx, qy = p0[0] + dx * t, p0[1] + dy * t
+                # Only if the point is displaced towards the far edge, which is
+                # the direction a shortened stitch pulls it.
+                if (p1[0] - qx) * (other[i][0] - qx) + (p1[1] - qy) * (other[i][1] - qy) > 0:
+                    r[i][0], r[i][1] = qx, qy
+    return [tuple(p) for p in a], [tuple(p) for p in b]
+
+
 def joint_rdp(a, b, eps):
     """Ramer-Douglas-Peucker over both rails at once.
 
@@ -308,6 +345,7 @@ def main(path, out_path, name):
             a, b = split_rails(c)
             if len(a) < 2 or len(b) < 2:
                 continue
+            a, b = unshorten(a, b)
             a, b = joint_rdp(a, b, 0.05)
             total_pts += len(a) + len(b)
             conv = lambda pts: [[round((q[0] - x0) * S, 5), round((q[1] - base) * S, 5)] for q in pts]
