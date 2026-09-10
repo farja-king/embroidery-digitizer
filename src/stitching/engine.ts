@@ -778,8 +778,8 @@ function letterStitches(obj: EmbObject, exit?: Point | null): StitchPoint[] {
  *
  * `centre` is the centreline of the stroke just finished; `from` is where the
  * needle is; `to` is where the next stroke starts. */
-function walkWithinLetter(centre: Point[], from: Point, to: Point, step: number): Point[] {
-  if (centre.length < 2) return resamplePath([from, to], step).slice(1);
+function routeVia(centre: Point[], from: Point, to: Point): Point[] {
+  if (centre.length < 2) return [from, to];
   const nearest = (p: Point): number => {
     let bi = 0;
     let bd = Infinity;
@@ -804,8 +804,12 @@ function walkWithinLetter(centre: Point[], from: Point, to: Point, step: number)
   let viaLen = 0;
   const via = [from, ...along, to];
   for (let i = 1; i < via.length; i++) viaLen += Math.hypot(via[i].x - via[i - 1].x, via[i].y - via[i - 1].y);
-  const path = viaLen <= direct * 1.6 ? via : [from, to];
-  return resamplePath(path, step).slice(1);
+  return viaLen <= direct * 1.6 ? via : [from, to];
+}
+
+function walkWithinLetter(centre: Point[], from: Point, to: Point, step: number): Point[] {
+  if (centre.length < 2) return resamplePath([from, to], step).slice(1);
+  return resamplePath(routeVia(centre, from, to), step).slice(1);
 }
 
 /** Whether this stroke's underlay finishes at the far end.
@@ -896,15 +900,6 @@ function railLetterStitches(obj: EmbObject, splits: number[], exit?: Point | nul
         : nearestOf(targets, endsOfColumn(column, flip));
       const ra = flip ? [...column.a].reverse() : column.a;
       const rb = flip ? [...column.b].reverse() : column.b;
-      const bestDist = cursor ? Math.hypot(ra[0].x - cursor.x, ra[0].y - cursor.y) : 0;
-
-      if (cursor && bestDist > 0.05) {
-        const step = Math.max(0.5, obj.running.stitchLength);
-        const route = lastCentre
-          ? walkWithinLetter(lastCentre, cursor, ra[0], step)
-          : resamplePath([cursor, ra[0]], step).slice(1);
-        for (const p of route) out.push({ x: p.x, y: p.y, command: 'STITCH' });
-      }
 
       const underlayPts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) => {
         const centre = ra.map((p, i) => {
@@ -914,6 +909,23 @@ function railLetterStitches(obj: EmbObject, splits: number[], exit?: Point | nul
         const w = Math.hypot(ra[0].x - rb[0].x, ra[0].y - rb[0].y);
         return satinUnderlay(centre, w, settings, type);
       });
+
+      // Walk to wherever the needle actually goes down first: the start of the
+      // underlay if there is one, otherwise whichever side of the stroke's near
+      // end the thread is closer to. Heading for one nominated edge instead
+      // adds a stroke's width of bare thread at a join, and leaves the router
+      // costing a walk that is not the one taken.
+      const first = underlayPts[0]
+        ?? (cursor && Math.hypot(rb[0].x - cursor.x, rb[0].y - cursor.y) < Math.hypot(ra[0].x - cursor.x, ra[0].y - cursor.y)
+          ? rb[0]
+          : ra[0]);
+      if (cursor && Math.hypot(first.x - cursor.x, first.y - cursor.y) > 0.05) {
+        const step = Math.max(0.5, obj.running.stitchLength);
+        const route = lastCentre
+          ? walkWithinLetter(lastCentre, cursor, first, step)
+          : resamplePath([cursor, first], step).slice(1);
+        for (const p of route) out.push({ x: p.x, y: p.y, command: 'STITCH' });
+      }
       out.push(...underlayPts.map((p) => ({ x: p.x, y: p.y, command: 'STITCH' as const })));
 
       // The underlay runs the length of the column and finishes at the far end,
@@ -1006,6 +1018,95 @@ function entryCandidates(group: LetterColumn[]): Point[] {
   return out;
 }
 
+/** How much more a millimetre of thread on bare fabric counts than a
+ * millimetre that lands on the letter.
+ *
+ * They are not worth the same. Thread that crosses ground the letter covers is
+ * stitched over and never seen; thread that crosses the gap between two
+ * strokes, or between two letters, lies on top of the fabric with nothing over
+ * it, and is the only travel anyone looks at. Counting plain distance, the
+ * router will add a millimetre of exposed thread to save a millimetre of
+ * hidden thread, which is the wrong way round: on "Text" that put 19.6mm on
+ * bare fabric where a route with more total travel needed 14.0mm. */
+const EXPOSED_WEIGHT = 3;
+
+/** A coarse map of the ground a letter's strokes cover.
+ *
+ * Used to ask, of a proposed hop from one stroke to the next, how much of it
+ * would lie on bare fabric. A grid rather than real geometry because the
+ * router asks the question a few hundred times per letter and the answer only
+ * has to be right to about a quarter of a millimetre. */
+function letterMask(group: LetterColumn[], cell = 0.25) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const c of group) {
+    for (const p of [...c.a, ...c.b]) {
+      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+    }
+  }
+  x0 -= 1; y0 -= 1; x1 += 1; y1 += 1;
+  const w = Math.max(1, Math.ceil((x1 - x0) / cell));
+  const h = Math.max(1, Math.ceil((y1 - y0) / cell));
+  const g = new Uint8Array(w * h);
+  const mark = (x: number, y: number) => {
+    const i = Math.floor((x - x0) / cell);
+    const j = Math.floor((y - y0) / cell);
+    if (i >= 0 && i < w && j >= 0 && j < h) g[j * w + i] = 1;
+  };
+  const paint = (A: Point, B: Point) => {
+    const n = Math.max(1, Math.ceil(Math.hypot(B.x - A.x, B.y - A.y) / (cell * 0.5)));
+    for (let k = 0; k <= n; k++) mark(A.x + ((B.x - A.x) * k) / n, A.y + ((B.y - A.y) * k) / n);
+  };
+  for (const c of group) {
+    const n = Math.min(c.a.length, c.b.length);
+    for (let i = 0; i < n; i++) {
+      paint(c.a[i], c.b[i]);
+      // and half way to the next rung, so successive rungs join up
+      if (i + 1 < n) {
+        paint(
+          { x: (c.a[i].x + c.a[i + 1].x) / 2, y: (c.a[i].y + c.a[i + 1].y) / 2 },
+          { x: (c.b[i].x + c.b[i + 1].x) / 2, y: (c.b[i].y + c.b[i + 1].y) / 2 },
+        );
+      }
+    }
+  }
+  return (p: Point) => {
+    const i = Math.floor((p.x - x0) / cell);
+    const j = Math.floor((p.y - y0) / cell);
+    return i >= 0 && i < w && j >= 0 && j < h && g[j * w + i] === 1;
+  };
+}
+
+/** What a hop from `p` to `q` really costs: its length, with the part that
+ * would lie on bare fabric counted `EXPOSED_WEIGHT` times over. */
+function travelCost(covers: (p: Point) => boolean, p: Point, q: Point): number {
+  const L = Math.hypot(q.x - p.x, q.y - p.y);
+  if (L < 1e-9) return 0;
+  const n = Math.min(16, Math.max(2, Math.ceil(L / 0.4)));
+  let off = 0;
+  for (let k = 0; k <= n; k++) {
+    if (!covers({ x: p.x + ((q.x - p.x) * k) / n, y: p.y + ((q.y - p.y) * k) / n })) off++;
+  }
+  const bare = off / (n + 1);
+  return L * (1 - bare + EXPOSED_WEIGHT * bare);
+}
+
+/** What the whole routed walk costs, priced segment by segment. */
+function pathCost(covers: (p: Point) => boolean, path: Point[]): number {
+  let t = 0;
+  for (let i = 1; i < path.length; i++) t += travelCost(covers, path[i - 1], path[i]);
+  return t;
+}
+
+/** The line down the middle of a stroke, which is the covered ground the
+ * needle can walk back along. */
+function centreOf(c: LetterColumn): Point[] {
+  const n = Math.min(c.a.length, c.b.length);
+  const out: Point[] = [];
+  for (let i = 0; i < n; i++) out.push({ x: (c.a[i].x + c.b[i].x) / 2, y: (c.a[i].y + c.b[i].y) / 2 });
+  return out;
+}
+
 /** Picks the order to sew a letter's strokes in, and which end to enter each
  * from, so the thread travels as little as possible -- and, crucially, so the
  * letter finishes next to whatever comes after it.
@@ -1030,17 +1131,45 @@ function bestColumnOrder(
   // distance to rail A alone.
   const endsOf = endsOfColumn;
   const startsOf = startsOfColumn;
+  const covers = letterMask(group);
   const gap = (p: Point | null, c: LetterColumn, flip: boolean) =>
-    p === null ? 0 : Math.min(...startsOf(c, flip).map((q) => Math.hypot(p.x - q.x, p.y - q.y)));
+    p === null ? 0 : Math.min(...startsOf(c, flip).map((q) => travelCost(covers, p, q)));
+  // Leaving a stroke, the needle can walk back down the middle of the one it
+  // has just sewn before striking out, and that part of the walk is covered.
+  // The router has to price the walk it will actually take, not the straight
+  // line: on the "T" of "Text" the two differ by the whole length of the
+  // crossbar.
+  const centres = new Map<LetterColumn, Point[]>();
+  const centreFor = (c: LetterColumn) => {
+    let v = centres.get(c);
+    if (!v) {
+      v = centreOf(c);
+      centres.set(c, v);
+    }
+    return v;
+  };
   const hop = (c: LetterColumn, flip: boolean, d: LetterColumn, dflip: boolean) => {
     let best = Infinity;
     for (const p of endsOf(c, flip)) {
-      for (const q of startsOf(d, dflip)) best = Math.min(best, Math.hypot(p.x - q.x, p.y - q.y));
+      for (const q of startsOf(d, dflip)) best = Math.min(best, pathCost(covers, routeVia(centreFor(c), p, q)));
     }
     return best;
   };
-  const leaveToExit = (c: LetterColumn, flip: boolean) =>
-    Math.min(...endsOf(c, flip).map((p) => toExit(p)));
+  // Leaving the letter is priced the same way, and it is the case that matters
+  // most. On the "T" of "Text" the crossbar's right end is nearest the "e", so
+  // by distance alone that is where the letter should finish -- but the whole
+  // run from there to the "e" is out in the open. Finishing at the left end
+  // instead is three times as far and almost all of it lies under the crossbar
+  // the needle has just sewn, with only the gap between the letters showing.
+  // The second is the better stitch-out and it is the one an experienced
+  // digitizer picks by eye.
+  const leaveToExit = (c: LetterColumn, flip: boolean) => {
+    let best = Infinity;
+    for (const p of endsOf(c, flip)) {
+      for (const t of exitTargets) best = Math.min(best, pathCost(covers, routeVia(centreFor(c), p, t)));
+    }
+    return best === Infinity ? 0 : best;
+  };
   // Distance to the nearest place the next letter can be picked up from.
   const toExit = (p: Point) => {
     let best = Infinity;
