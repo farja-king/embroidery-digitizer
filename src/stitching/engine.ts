@@ -218,12 +218,42 @@ function runningStitches(points: Point[], stitchLength: number, triple: boolean)
   return out;
 }
 
+/** Half-width at a given arc-length position along a centreline, interpolated
+ * from a per-point table. The satin resamples the centreline much more finely
+ * than the table was built at, so the two cannot be indexed together; arc
+ * length is the common measure. */
+function halfWidthSampler(points: Point[], halfWidths: number[]): (t: number) => number {
+  const cum: number[] = [0];
+  for (let i = 1; i < points.length; i++) {
+    cum.push(cum[i - 1] + Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y));
+  }
+  return (t: number) => {
+    if (halfWidths.length === 0) return 0;
+    if (t <= 0) return halfWidths[0];
+    const last = cum[cum.length - 1];
+    if (t >= last) return halfWidths[Math.min(halfWidths.length - 1, points.length - 1)];
+    let lo = 0;
+    let hi = cum.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (cum[mid] <= t) lo = mid;
+      else hi = mid;
+    }
+    const span = cum[hi] - cum[lo] || 1;
+    const f = (t - cum[lo]) / span;
+    const a = halfWidths[Math.min(lo, halfWidths.length - 1)];
+    const b = halfWidths[Math.min(hi, halfWidths.length - 1)];
+    return a + (b - a) * f;
+  };
+}
+
 function satinStitches(
   points: Point[],
   width: number,
   density: number,
   underlayPts: Point[],
   pullCompensation: number,
+  halfWidths?: number[],
 ): StitchPoint[] {
   // `density` is the gap between two needle penetrations on the SAME rail --
   // the measure every digitizer and Hatch itself uses, and the number stamped on
@@ -262,10 +292,27 @@ function satinStitches(
   // junctions and spill outside the letterform. A quarter of the width per side
   // is as far as compensation can sensibly go.
   const comp = Math.min(Math.max(0, pullCompensation), width * 0.25);
-  const half = width / 2 + comp;
+
+  // Where the shape's own half-width is known point by point, the rails follow
+  // it. A letter stroke tapers and is cut flat at its ends, and a constant-width
+  // band drawn down its middle spills outside the letterform at every terminal.
+  const sampler =
+    halfWidths && halfWidths.length === points.length && points.length > 1
+      ? halfWidthSampler(points, halfWidths)
+      : null;
+  const reversed = sampler !== null && sampled[0] !== points[0];
+  let travelled = 0;
+  const totalLen = (() => {
+    let t = 0;
+    for (let i = 1; i < points.length; i++) t += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    return t;
+  })();
+
   for (let i = 0; i < sampled.length; i++) {
+    if (i > 0) travelled += Math.hypot(sampled[i].x - sampled[i - 1].x, sampled[i].y - sampled[i - 1].y);
     const n = normalAt(sampled, i);
     const side = i % 2 === 0 ? 1 : -1;
+    const half = sampler ? sampler(reversed ? totalLen - travelled : travelled) + comp : width / 2 + comp;
     out.push({
       x: sampled[i].x + n.x * half * side,
       y: sampled[i].y + n.y * half * side,
@@ -449,16 +496,17 @@ function fillStitches(
 }
 
 /** Splits a multi-column satin object's `points` into its columns. */
-function columnsOf(obj: EmbObject): { points: Point[]; width: number }[] {
+function columnsOf(obj: EmbObject): { points: Point[]; width: number; halfWidths?: number[] }[] {
   const breaks = obj.satin.columnBreaks ?? [];
   const bounds = [0, ...breaks.filter((b) => b > 0 && b < obj.points.length), obj.points.length];
-  const cols: { points: Point[]; width: number }[] = [];
+  const cols: { points: Point[]; width: number; halfWidths?: number[] }[] = [];
   for (let i = 0; i + 1 < bounds.length; i++) {
     const slice = obj.points.slice(bounds[i], bounds[i + 1]);
     if (slice.length < 2) continue;
     cols.push({
       points: slice.map((p) => ({ x: p.x, y: p.y })),
       width: obj.satin.columnWidths?.[cols.length] ?? obj.satin.width,
+      halfWidths: obj.satin.pointHalfWidths?.slice(bounds[i], bounds[i + 1]),
     });
   }
   return cols;
@@ -516,7 +564,8 @@ function letterStitches(obj: EmbObject): StitchPoint[] {
     const underlayPts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) =>
       satinUnderlay(line, chosen.width, settings, type),
     );
-    const colStitches = satinStitches(line, chosen.width, obj.satin.density, underlayPts, obj.satin.pullCompensation ?? 0);
+    const halves = chosen.halfWidths && bestRev ? [...chosen.halfWidths].reverse() : chosen.halfWidths;
+    const colStitches = satinStitches(line, chosen.width, obj.satin.density, underlayPts, obj.satin.pullCompensation ?? 0, halves);
     out.push(...colStitches);
     const last = colStitches[colStitches.length - 1];
     if (last) cursor = { x: last.x, y: last.y };
@@ -539,7 +588,14 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
       const underlayPts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) =>
         satinUnderlay(flat, obj.satin.width, settings, type),
       );
-      return satinStitches(flat, obj.satin.width, obj.satin.density, underlayPts, obj.satin.pullCompensation ?? 0);
+      return satinStitches(
+        flat,
+        obj.satin.width,
+        obj.satin.density,
+        underlayPts,
+        obj.satin.pullCompensation ?? 0,
+        obj.satin.pointHalfWidths,
+      );
     }
     case 'fill': {
       const underlayPts = resolveUnderlay(obj, obj.fill.underlay, (settings, type) =>

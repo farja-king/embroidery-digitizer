@@ -8,6 +8,10 @@ import type { Point } from '../types';
 export interface Stroke {
   centerline: Point[];
   width: number;
+  // Half-width at each centreline point, so the column can follow a stroke that
+  // tapers or is cut flat at an angle instead of being a constant-width band
+  // that spills out of the letter at every end. Same length as `centerline`.
+  halfWidths: number[];
 }
 
 // Working resolution for the raster stage, in samples per millimetre. High
@@ -460,11 +464,14 @@ function extendToEdge(path: Point[], r: Raster, maxMm: number): Point[] {
  * back into a grid the same size as the glyph and compared against it, and the
  * caller uses that to decide whether the stroke decomposition is trustworthy
  * for this particular glyph. */
-function coverageOf(strokes: Stroke[], r: Raster): number {
+function coverageOf(strokes: Stroke[], r: Raster, extraMm: number): number {
   const painted = new Uint8Array(r.w * r.h);
   for (const st of strokes) {
-    const half = (st.width / 2) * r.scale;
     for (let i = 1; i < st.centerline.length; i++) {
+      // Include the pull compensation the column will really be stitched with:
+      // the rails sit a little proud of the outline on purpose, and judging
+      // coverage without it understates what actually lands on the fabric.
+      const half = ((st.halfWidths[i - 1] + st.halfWidths[i]) / 2 + extraMm) * r.scale;
       const a = st.centerline[i - 1];
       const b = st.centerline[i];
       const ax = (a.x - r.originX) * r.scale;
@@ -504,7 +511,10 @@ function coverageOf(strokes: Stroke[], r: Raster): number {
  *
  * `contours` is the island's outer boundary followed by any holes, already
  * flattened to polylines in design millimetres. */
-export function glyphToStrokes(contours: Point[][]): { strokes: Stroke[]; coverage: number } | null {
+export function glyphToStrokes(
+  contours: Point[][],
+  pullCompensationMm = 0.12,
+): { strokes: Stroke[]; coverage: number } | null {
   if (contours.length === 0 || contours[0].length < 3) return null;
   const r = rasterize(contours, 3);
   if (!r) return null;
@@ -582,9 +592,59 @@ export function glyphToStrokes(contours: Point[][]): { strokes: Stroke[]; covera
     mm = resampleEvery(mm, Math.max(0.35, width * 0.6));
     if (mm.length < 2) continue;
     mm = extendToEdge(mm, r, width * 0.75);
-    strokes.push({ centerline: mm, width });
+
+    // How far the letter actually extends either side of each point. Taken from
+    // the distance transform, so the column inscribes the stroke rather than
+    // approximating it: it reaches the edge where the stroke is full width and
+    // pulls in where it tapers or ends.
+    const halfWidths = mm.map((p) => {
+      const px = (p.x - r.originX) * r.scale - 0.5;
+      const py = (p.y - r.originY) * r.scale - 0.5;
+      const i = Math.round(py) * r.w + Math.round(px);
+      const d = i >= 0 && i < dist.length ? dist[i] / r.scale : 0;
+      return Math.max(0.1, d);
+    });
+    // A single stray sample (right at a junction, or one pixel outside at an
+    // extended end) would put a notch in the column's edge; a light smoothing
+    // keeps the rail continuous without losing the taper.
+    const smoothedHalf = halfWidths.map((_, i) => {
+      const a = halfWidths[Math.max(0, i - 1)];
+      const b = halfWidths[i];
+      const c = halfWidths[Math.min(halfWidths.length - 1, i + 1)];
+      return (a + b * 2 + c) / 4;
+    });
+
+    // Square off the two ends. Distance to the boundary necessarily falls to
+    // nothing at the tip of a stroke, so a column that follows it tapers to a
+    // point -- but a letter's stroke is cut off square, and the corners either
+    // side of that flat end are then left bare. On a plain stem like "l" or "i"
+    // that alone was most of the missing coverage. Hold the width from one
+    // half-width in, out to the end, so the column finishes with a flat edge the
+    // same shape as the letter's own.
+    const holdFrom = (fromStart: boolean) => {
+      const n = smoothedHalf.length;
+      const endIdx = fromStart ? 0 : n - 1;
+      const target = smoothedHalf[endIdx];
+      let walked = 0;
+      for (let k = 1; k < n; k++) {
+        const i = fromStart ? k : n - 1 - k;
+        const j = fromStart ? k - 1 : n - k;
+        walked += Math.hypot(mm[i].x - mm[j].x, mm[i].y - mm[j].y);
+        if (walked >= Math.max(target, smoothedHalf[i])) {
+          for (let q = 0; q < k; q++) {
+            const idx = fromStart ? q : n - 1 - q;
+            smoothedHalf[idx] = Math.max(smoothedHalf[idx], smoothedHalf[i]);
+          }
+          return;
+        }
+      }
+    };
+    holdFrom(true);
+    holdFrom(false);
+
+    strokes.push({ centerline: mm, width, halfWidths: smoothedHalf });
   }
 
   if (strokes.length === 0) return null;
-  return { strokes, coverage: coverageOf(strokes, r) };
+  return { strokes, coverage: coverageOf(strokes, r, pullCompensationMm) };
 }

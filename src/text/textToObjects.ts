@@ -235,7 +235,9 @@ export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
       // outline; see there for how, and for why it reports how much of the
       // glyph the strokes would actually cover.
       const decomposed =
-        stitchStyle === 'satin-auto' ? glyphToStrokes([island.outer, ...island.holes]) : null;
+        stitchStyle === 'satin-auto'
+          ? glyphToStrokes([island.outer, ...island.holes], TEXT_PULL_COMPENSATION_MM)
+          : null;
 
       if (decomposed && decomposed.coverage >= MIN_STROKE_COVERAGE) {
         // The letter is ONE object holding all its columns end to end, not a
@@ -245,16 +247,21 @@ export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
         const points: PathPoint[] = [];
         const columnBreaks: number[] = [];
         const columnWidths: number[] = [];
+        const pointHalfWidths: number[] = [];
         for (const stroke of decomposed.strokes) {
           if (points.length > 0) columnBreaks.push(points.length);
           columnWidths.push(stroke.width);
-          for (const p of stroke.centerline) points.push({ x: p.x, y: p.y, type: 'corner' });
+          stroke.centerline.forEach((p, k) => {
+            points.push({ x: p.x, y: p.y, type: 'corner' });
+            pointHalfWidths.push(stroke.halfWidths[k] ?? stroke.width / 2);
+          });
         }
         if (points.length < 2) continue;
         const obj = defaultObject('satin', points, color);
         obj.satin.width = columnWidths[0];
         obj.satin.columnBreaks = columnBreaks;
         obj.satin.columnWidths = columnWidths;
+        obj.satin.pointHalfWidths = pointHalfWidths;
         // Compensation is a fixed millimetre figure meant for a hand-drawn
         // column. Letter strokes are far narrower, and the default would widen
         // them by most of their own width, so lettering asks for much less.
