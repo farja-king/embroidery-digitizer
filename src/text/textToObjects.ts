@@ -11,7 +11,11 @@ const CURVE_SEGMENTS = 8;
 // Below this the strokes are leaving enough of the letter bare that a plain
 // fill -- which covers by construction -- is the better answer, even though it
 // stitches the whole letter in one direction.
-const MIN_STROKE_COVERAGE = 0.9; // per bezier curve -- plenty smooth at typical lettering sizes
+const MIN_STROKE_COVERAGE = 0.9;
+
+// Pull compensation for lettering, in mm per side. Well below the general satin
+// default, which exists for columns several millimetres wide.
+const TEXT_PULL_COMPENSATION_MM = 0.12; // per bezier curve -- plenty smooth at typical lettering sizes
 
 /** Flattens one opentype.Path (already scaled + positioned in design-space mm)
  * into closed-contour point lists. A glyph's path can contain more than one
@@ -209,8 +213,12 @@ export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
 
   const objects: EmbObject[] = [];
   let cursorX = x;
+  const chars = [...text];
   for (let i = 0; i < glyphs.length; i++) {
     const glyph = glyphs[i];
+    // Name each object after the character it is, so the object list reads as
+    // the word rather than a column of identical rows.
+    const char = chars[i] ?? '?';
     if (i > 0) {
       const kerning = font.getKerningValue(glyphs[i - 1], glyph);
       cursorX += kerning * scale;
@@ -230,20 +238,32 @@ export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
         stitchStyle === 'satin-auto' ? glyphToStrokes([island.outer, ...island.holes]) : null;
 
       if (decomposed && decomposed.coverage >= MIN_STROKE_COVERAGE) {
-        // One group per letter, so the strokes of a glyph select and move as the
-        // single thing a reader thinks of them as.
-        const groupId = makeId();
+        // The letter is ONE object holding all its columns end to end, not a
+        // scattering of separate strokes. That is what makes it selectable and
+        // movable as the single thing it is, and it lets the engine walk from
+        // one stroke to the next instead of trimming the thread between them.
+        const points: PathPoint[] = [];
+        const columnBreaks: number[] = [];
+        const columnWidths: number[] = [];
         for (const stroke of decomposed.strokes) {
-          const points: PathPoint[] = stroke.centerline.map((p) => ({ x: p.x, y: p.y, type: 'corner' }));
-          const obj = defaultObject('satin', points, color);
-          obj.satin.width = stroke.width;
-          obj.id = makeId();
-          obj.name = `Text "${text}"`;
-          obj.fromText = true;
-          obj.groupId = groupId;
-          applyUnderlayMode(obj, opts.underlayMode);
-          objects.push(obj);
+          if (points.length > 0) columnBreaks.push(points.length);
+          columnWidths.push(stroke.width);
+          for (const p of stroke.centerline) points.push({ x: p.x, y: p.y, type: 'corner' });
         }
+        if (points.length < 2) continue;
+        const obj = defaultObject('satin', points, color);
+        obj.satin.width = columnWidths[0];
+        obj.satin.columnBreaks = columnBreaks;
+        obj.satin.columnWidths = columnWidths;
+        // Compensation is a fixed millimetre figure meant for a hand-drawn
+        // column. Letter strokes are far narrower, and the default would widen
+        // them by most of their own width, so lettering asks for much less.
+        obj.satin.pullCompensation = TEXT_PULL_COMPENSATION_MM;
+        obj.id = makeId();
+        obj.name = `${char} — "${text}"`;
+        obj.fromText = true;
+        applyUnderlayMode(obj, opts.underlayMode);
+        objects.push(obj);
         continue;
       }
 

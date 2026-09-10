@@ -75,6 +75,19 @@ export interface SatinParams {
   // Pull compensation pushes each rail outward by this much to counteract it —
   // a standard Hatch/industry technique, not a cosmetic setting.
   pullCompensation: number;
+  // A letter is not one column: an "A" is two legs and a bar, each needing its
+  // own direction. Rather than scatter a letter across several objects -- which
+  // makes it impossible to select or move as the single thing it is, and puts a
+  // thread trim between every stroke -- one satin object can hold several
+  // columns end to end in `points`, with this listing the index in `points`
+  // where each column after the first begins. The engine stitches them in order
+  // and walks between them, so a whole letter is one element and one continuous
+  // run of thread. Optional: an ordinary hand-drawn column has no breaks.
+  columnBreaks?: number[];
+  // Per-column width, parallel to the columns implied by `columnBreaks`. A
+  // letter's strokes are not all the same thickness. Falls back to `width` for
+  // any column it does not cover.
+  columnWidths?: number[];
 }
 
 export interface FillParams {

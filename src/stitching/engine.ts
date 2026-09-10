@@ -234,13 +234,35 @@ function satinStitches(
   // column set to a normal density came out at half the thread it should have.
   // Measured against Hatch's own text export, which lands on 0.400mm same-rail
   // at its 0.4 setting.
-  const sampled = resamplePath(points, Math.max(0.05, density / 2));
+  let sampled = resamplePath(points, Math.max(0.05, density / 2));
   const out: StitchPoint[] = [];
   for (const p of underlayPts) out.push({ x: p.x, y: p.y, command: 'STITCH' });
+
+  // The underlay ends wherever it ends -- a centre-run finishes at the far end
+  // of the column. Starting the top stitching back at the centreline's first
+  // point then throws one stitch the whole length of the column to get there,
+  // straight back over the underlay. On a 7mm stem that is a 7mm stitch, on
+  // every column in a word. Run the column from whichever end the thread is
+  // already at instead; a satin column covers the same ground either way.
+  if (underlayPts.length > 0 && sampled.length > 1) {
+    const at = underlayPts[underlayPts.length - 1];
+    const toStart = Math.hypot(at.x - sampled[0].x, at.y - sampled[0].y);
+    const toEnd = Math.hypot(at.x - sampled[sampled.length - 1].x, at.y - sampled[sampled.length - 1].y);
+    if (toEnd < toStart) sampled = [...sampled].reverse();
+  }
+
   // Thread tension pulls stitched fabric in toward the column's centerline, so a
   // column sewn at its exact digitized width comes out narrower on fabric than on
   // screen. Push each rail outward by the compensation amount to counteract it.
-  const half = width / 2 + Math.max(0, pullCompensation);
+  //
+  // Capped as a share of the column's own width. Compensation is a fixed number
+  // of millimetres, which is right for the hand-drawn columns it was set for but
+  // ruinous on a narrow one: 0.35mm a side on a 0.92mm letter stroke is a column
+  // 76% wider than the letter, so the strokes bloat, overlap each other at
+  // junctions and spill outside the letterform. A quarter of the width per side
+  // is as far as compensation can sensibly go.
+  const comp = Math.min(Math.max(0, pullCompensation), width * 0.25);
+  const half = width / 2 + comp;
   for (let i = 0; i < sampled.length; i++) {
     const n = normalAt(sampled, i);
     const side = i % 2 === 0 ? 1 : -1;
@@ -426,6 +448,82 @@ function fillStitches(
   return evened;
 }
 
+/** Splits a multi-column satin object's `points` into its columns. */
+function columnsOf(obj: EmbObject): { points: Point[]; width: number }[] {
+  const breaks = obj.satin.columnBreaks ?? [];
+  const bounds = [0, ...breaks.filter((b) => b > 0 && b < obj.points.length), obj.points.length];
+  const cols: { points: Point[]; width: number }[] = [];
+  for (let i = 0; i + 1 < bounds.length; i++) {
+    const slice = obj.points.slice(bounds[i], bounds[i + 1]);
+    if (slice.length < 2) continue;
+    cols.push({
+      points: slice.map((p) => ({ x: p.x, y: p.y })),
+      width: obj.satin.columnWidths?.[cols.length] ?? obj.satin.width,
+    });
+  }
+  return cols;
+}
+
+/** A letter: several satin columns stitched in sequence, joined by travel
+ * stitches rather than trims.
+ *
+ * The columns are visited nearest-first, each free to be stitched from either
+ * end, so the thread never crosses the letter to reach the next stroke. Between
+ * two columns it runs a plain line at the object's own stitch length -- short,
+ * and buried under the stroke it lands on. That is what a digitized font does:
+ * one letter, one run of thread, no trim until the letter is finished. */
+function letterStitches(obj: EmbObject): StitchPoint[] {
+  const cols = columnsOf(obj);
+  if (cols.length === 0) return [];
+
+  const remaining = cols.map((c, i) => ({ ...c, i }));
+  const out: StitchPoint[] = [];
+  let cursor: Point | null = null;
+
+  while (remaining.length > 0) {
+    let bestIdx = 0;
+    let bestRev = false;
+    let bestDist = Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const pts = remaining[i].points;
+      const head = pts[0];
+      const tail = pts[pts.length - 1];
+      const dHead = cursor ? Math.hypot(head.x - cursor.x, head.y - cursor.y) : 0;
+      const dTail = cursor ? Math.hypot(tail.x - cursor.x, tail.y - cursor.y) : 0;
+      if (dHead < bestDist) {
+        bestDist = dHead;
+        bestIdx = i;
+        bestRev = false;
+      }
+      if (dTail < bestDist) {
+        bestDist = dTail;
+        bestIdx = i;
+        bestRev = true;
+      }
+    }
+    const chosen = remaining.splice(bestIdx, 1)[0];
+    const line = bestRev ? [...chosen.points].reverse() : chosen.points;
+
+    // Walk to this column's start, at the object's own stitch length so the
+    // travel is never one long stride.
+    if (cursor && bestDist > 0.05) {
+      const step = Math.max(0.5, obj.running.stitchLength);
+      for (const p of resamplePath([cursor, line[0]], step).slice(1)) {
+        out.push({ x: p.x, y: p.y, command: 'STITCH' });
+      }
+    }
+
+    const underlayPts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) =>
+      satinUnderlay(line, chosen.width, settings, type),
+    );
+    const colStitches = satinStitches(line, chosen.width, obj.satin.density, underlayPts, obj.satin.pullCompensation ?? 0);
+    out.push(...colStitches);
+    const last = colStitches[colStitches.length - 1];
+    if (last) cursor = { x: last.x, y: last.y };
+  }
+  return out;
+}
+
 export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
   if (!obj.visible || obj.points.length < 2) return [];
   const flat = flattenPath(obj.points, obj.kind === 'fill');
@@ -433,6 +531,11 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
     case 'running':
       return runningStitches(flat, obj.running.stitchLength, obj.running.triple);
     case 'satin': {
+      // A multi-column object (a letter built from its strokes) is stitched
+      // column by column, walking from the end of one to the start of the next
+      // so the whole letter is one continuous run with no trims inside it.
+      const breaks = obj.satin.columnBreaks;
+      if (breaks && breaks.length > 0) return letterStitches(obj);
       const underlayPts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) =>
         satinUnderlay(flat, obj.satin.width, settings, type),
       );

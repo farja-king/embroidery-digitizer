@@ -1624,25 +1624,37 @@ function drawObject(
     ctx.lineWidth = 1.5;
     ctx.stroke();
   } else {
-    const flat = flattenPath(obj.points, false);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = obj.kind === 'satin' ? Math.max(2, obj.satin.width * scale) : 2;
-    ctx.globalAlpha = obj.kind === 'satin' ? 0.5 : 1;
+    // A letter is one satin object holding several columns end to end, so the
+    // path has to be broken where one column stops and the next starts --
+    // drawing straight through would put a bogus stroke across the letter
+    // between, say, the bar of an "A" and its next leg.
+    const breaks = obj.kind === 'satin' ? (obj.satin.columnBreaks ?? []) : [];
+    const bounds = [0, ...breaks.filter((b) => b > 0 && b < obj.points.length), obj.points.length];
+    const widths = obj.kind === 'satin' ? obj.satin.columnWidths : undefined;
+
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.beginPath();
-    const first = toScreen(flat[0]);
-    ctx.moveTo(first.x, first.y);
-    for (let i = 1; i < flat.length; i++) {
-      const s = toScreen(flat[i]);
-      ctx.lineTo(s.x, s.y);
-    }
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-    if (obj.kind === 'satin') {
+    for (let c = 0; c + 1 < bounds.length; c++) {
+      const slice = obj.points.slice(bounds[c], bounds[c + 1]);
+      if (slice.length < 2) continue;
+      const flat = flattenPath(slice, false);
+      const w = obj.kind === 'satin' ? (widths?.[c] ?? obj.satin.width) : 0;
       ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = obj.kind === 'satin' ? Math.max(2, w * scale) : 2;
+      ctx.globalAlpha = obj.kind === 'satin' ? 0.5 : 1;
+      ctx.beginPath();
+      const first = toScreen(flat[0]);
+      ctx.moveTo(first.x, first.y);
+      for (let i = 1; i < flat.length; i++) {
+        const sp = toScreen(flat[i]);
+        ctx.lineTo(sp.x, sp.y);
+      }
       ctx.stroke();
+      ctx.globalAlpha = 1;
+      if (obj.kind === 'satin') {
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
     }
   }
 
