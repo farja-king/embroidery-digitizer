@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, defaultObject, makeId, transformFillAnchors } from '../state/store';
 import { textToObjects } from '../text/textToObjects';
-import { useLoadedFont, useTextFonts } from '../text/useTextFonts';
+import { EMBROIDERY_FONT_KEY, useLoadedFont, useTextFonts } from '../text/useTextFonts';
+import { BUILT_IN_FONT, embroideryTextToObjects } from '../text/embroideryFont';
 import TextToolBar from './TextToolBar';
 import type { EmbObject, FillParams, Guide, PathPoint, Point } from '../types';
 import { buildPattern, generateObjectStitches, type StitchPoint } from '../stitching/engine';
@@ -301,7 +302,22 @@ export default function Canvas() {
   // is on the canvas while typing is exactly what gets committed -- no separate
   // preview representation that could drift from the real thing.
   const typedObjects = useMemo(() => {
-    if (!typing || !activeFont || !typing.value) return [];
+    if (!typing || !typing.value) return [];
+    if (textFontKey === EMBROIDERY_FONT_KEY) {
+      try {
+        return embroideryTextToObjects({
+          text: typing.value,
+          font: BUILT_IN_FONT,
+          sizeMm: textSizeMm,
+          x: typing.x,
+          y: typing.y,
+          color: activeColor,
+        });
+      } catch {
+        return [];
+      }
+    }
+    if (!activeFont) return [];
     try {
       return textToObjects({
         text: typing.value,
@@ -315,7 +331,7 @@ export default function Canvas() {
     } catch {
       return [];
     }
-  }, [typing, activeFont, textSizeMm, activeColor, textStitchStyle]);
+  }, [typing, activeFont, textFontKey, textSizeMm, activeColor, textStitchStyle]);
   const dragRef = useRef<
     | { kind: 'pan'; startPx: Point; startPan: Point }
     | { kind: 'move-object'; id: string; startMm: Point; original: PathPoint[]; originalFill: FillParams | null }
@@ -1631,9 +1647,45 @@ function drawObject(
     const breaks = obj.kind === 'satin' ? (obj.satin.columnBreaks ?? []) : [];
     const bounds = [0, ...breaks.filter((b) => b > 0 && b < obj.points.length), obj.points.length];
     const widths = obj.kind === 'satin' ? obj.satin.columnWidths : undefined;
+    const splits = obj.kind === 'satin' ? obj.satin.railSplits : undefined;
 
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+
+    // A letter from the digitized font stores each column as its two edges, so
+    // it is drawn as the band between them rather than as a line down a
+    // centreline that does not exist.
+    if (splits && splits.length > 0) {
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.55;
+      for (let c = 0; c + 1 < bounds.length; c++) {
+        const from = bounds[c];
+        const to = bounds[c + 1];
+        const split = from + (splits[c] ?? Math.floor((to - from) / 2));
+        const railA = obj.points.slice(from, split);
+        const railB = obj.points.slice(split, to);
+        if (railA.length < 2 || railB.length < 2) continue;
+        ctx.beginPath();
+        const first = toScreen(railA[0]);
+        ctx.moveTo(first.x, first.y);
+        for (let i = 1; i < railA.length; i++) {
+          const sp = toScreen(railA[i]);
+          ctx.lineTo(sp.x, sp.y);
+        }
+        for (let i = railB.length - 1; i >= 0; i--) {
+          const sp = toScreen(railB[i]);
+          ctx.lineTo(sp.x, sp.y);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      if (selected) {
+        for (const p of obj.points) drawVertexMarker(ctx, toScreen(p), p.type, '#2f6fed', '#ffffff');
+      }
+      return;
+    }
+
     for (let c = 0; c + 1 < bounds.length; c++) {
       const slice = obj.points.slice(bounds[c], bounds[c + 1]);
       if (slice.length < 2) continue;

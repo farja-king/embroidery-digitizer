@@ -501,6 +501,56 @@ function fillStitches(
 }
 
 /** Splits a multi-column satin object's `points` into its columns. */
+/** A satin column given as its two edges: the needle crosses from one to the
+ * other and back, advancing by the density each time. This is how a digitized
+ * font defines a column, and it is exact -- no centreline is guessed at, and
+ * the stitch angle is whatever the two rails imply, including the deliberate
+ * slant a digitizer puts on a curve. */
+function railStitches(a: Point[], b: Point[], density: number, pullCompensation: number): StitchPoint[] {
+  const len = (r: Point[]) => {
+    let t = 0;
+    for (let i = 1; i < r.length; i++) t += Math.hypot(r[i].x - r[i - 1].x, r[i].y - r[i - 1].y);
+    return t;
+  };
+  const steps = Math.max(2, Math.round(Math.max(len(a), len(b)) / Math.max(0.05, density)) + 1);
+  const along = (r: Point[], n: number): Point[] => {
+    const cum = [0];
+    for (let i = 1; i < r.length; i++) cum.push(cum[i - 1] + Math.hypot(r[i].x - r[i - 1].x, r[i].y - r[i - 1].y));
+    const total = cum[cum.length - 1];
+    const out: Point[] = [];
+    for (let k = 0; k < n; k++) {
+      const t = total * (k / (n - 1));
+      let j = 1;
+      while (j < cum.length - 1 && cum[j] < t) j++;
+      const span = cum[j] - cum[j - 1] || 1;
+      const u = (t - cum[j - 1]) / span;
+      out.push({ x: r[j - 1].x + (r[j].x - r[j - 1].x) * u, y: r[j - 1].y + (r[j].y - r[j - 1].y) * u });
+    }
+    return out;
+  };
+  const ra = along(a, steps);
+  const rb = along(b, steps);
+  const comp = Math.max(0, pullCompensation);
+  const out: StitchPoint[] = [];
+  for (let i = 0; i < steps; i++) {
+    // Compensation pushes each rail a little further out along the line
+    // between them, which is the direction the fabric pulls in.
+    let ax = ra[i].x, ay = ra[i].y, bx = rb[i].x, by = rb[i].y;
+    if (comp > 0) {
+      const dx = bx - ax, dy = by - ay;
+      const d = Math.hypot(dx, dy);
+      if (d > 1e-9) {
+        const ux = dx / d, uy = dy / d;
+        ax -= ux * comp; ay -= uy * comp;
+        bx += ux * comp; by += uy * comp;
+      }
+    }
+    if (i % 2 === 0) { out.push({ x: ax, y: ay, command: 'STITCH' }); out.push({ x: bx, y: by, command: 'STITCH' }); }
+    else { out.push({ x: bx, y: by, command: 'STITCH' }); out.push({ x: ax, y: ay, command: 'STITCH' }); }
+  }
+  return out;
+}
+
 function columnsOf(obj: EmbObject): { points: Point[]; width: number; railLeft?: number[]; railRight?: number[] }[] {
   const breaks = obj.satin.columnBreaks ?? [];
   const bounds = [0, ...breaks.filter((b) => b > 0 && b < obj.points.length), obj.points.length];
@@ -527,6 +577,11 @@ function columnsOf(obj: EmbObject): { points: Point[]; width: number; railLeft?:
  * and buried under the stroke it lands on. That is what a digitized font does:
  * one letter, one run of thread, no trim until the letter is finished. */
 function letterStitches(obj: EmbObject): StitchPoint[] {
+  // A letter from a digitized font carries both rails of every column, so it
+  // is stitched from those directly rather than from a centreline and a width.
+  const splits = obj.satin.railSplits;
+  if (splits && splits.length > 0) return railLetterStitches(obj, splits);
+
   const cols = columnsOf(obj);
   if (cols.length === 0) return [];
 
@@ -580,6 +635,75 @@ function letterStitches(obj: EmbObject): StitchPoint[] {
   return out;
 }
 
+/** Stitches a letter whose columns are stored as pairs of rails, in the order
+ * the font gives them -- which is the order the original was sewn in -- walking
+ * between columns rather than trimming, so the letter is one run of thread. */
+function railLetterStitches(obj: EmbObject, splits: number[]): StitchPoint[] {
+  const breaks = obj.satin.columnBreaks ?? [];
+  const bounds = [0, ...breaks.filter((b) => b > 0 && b < obj.points.length), obj.points.length];
+  const out: StitchPoint[] = [];
+  let cursor: Point | null = null;
+
+  for (let c = 0; c + 1 < bounds.length; c++) {
+    const from = bounds[c];
+    const to = bounds[c + 1];
+    const split = from + (splits[c] ?? Math.floor((to - from) / 2));
+    const a = obj.points.slice(from, split).map((p) => ({ x: p.x, y: p.y }));
+    const b = obj.points.slice(split, to).map((p) => ({ x: p.x, y: p.y }));
+    if (a.length < 2 || b.length < 2) continue;
+
+    // Enter at whichever end of the column is nearer, so the thread never
+    // crosses the letter to start the next stroke.
+    const headGap = cursor ? Math.hypot(a[0].x - cursor.x, a[0].y - cursor.y) : 0;
+    const tailGap = cursor ? Math.hypot(a[a.length - 1].x - cursor.x, a[a.length - 1].y - cursor.y) : 0;
+    const flip = cursor !== null && tailGap < headGap;
+    const ra = flip ? [...a].reverse() : a;
+    const rb = flip ? [...b].reverse() : b;
+
+    if (cursor) {
+      const gap = Math.hypot(ra[0].x - cursor.x, ra[0].y - cursor.y);
+      if (gap > 0.05) {
+        const step = Math.max(0.5, obj.running.stitchLength);
+        for (const p of resamplePath([cursor, ra[0]], step).slice(1)) {
+          out.push({ x: p.x, y: p.y, command: 'STITCH' });
+        }
+      }
+    }
+
+    const underlayPts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) => {
+      const centre = ra.map((p, i) => {
+        const q = rb[Math.min(i, rb.length - 1)];
+        return { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
+      });
+      const w = Math.hypot(ra[0].x - rb[0].x, ra[0].y - rb[0].y);
+      return satinUnderlay(centre, w, settings, type);
+    });
+    out.push(...underlayPts.map((p) => ({ x: p.x, y: p.y, command: 'STITCH' as const })));
+
+    // The underlay runs the length of the column and finishes at the far end.
+    // Starting the top stitching back at the near end would throw one stitch
+    // the whole length of the stroke to get there, over the underlay it just
+    // laid -- so the column is stitched from whichever end the thread is at.
+    let sa = ra;
+    let sb = rb;
+    const at = underlayPts[underlayPts.length - 1];
+    if (at) {
+      const toHead = Math.hypot(at.x - sa[0].x, at.y - sa[0].y);
+      const toTail = Math.hypot(at.x - sa[sa.length - 1].x, at.y - sa[sa.length - 1].y);
+      if (toTail < toHead) {
+        sa = [...sa].reverse();
+        sb = [...sb].reverse();
+      }
+    }
+
+    const col = railStitches(sa, sb, obj.satin.density, obj.satin.pullCompensation ?? 0);
+    out.push(...col);
+    const last = col[col.length - 1];
+    if (last) cursor = { x: last.x, y: last.y };
+  }
+  return out;
+}
+
 export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
   if (!obj.visible || obj.points.length < 2) return [];
   const flat = flattenPath(obj.points, obj.kind === 'fill');
@@ -591,7 +715,9 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
       // column by column, walking from the end of one to the start of the next
       // so the whole letter is one continuous run with no trims inside it.
       const breaks = obj.satin.columnBreaks;
-      if (breaks && breaks.length > 0) return letterStitches(obj);
+      if ((breaks && breaks.length > 0) || (obj.satin.railSplits && obj.satin.railSplits.length > 0)) {
+        return letterStitches(obj);
+      }
       const underlayPts = resolveUnderlay(obj, obj.satin.underlay, (settings, type) =>
         satinUnderlay(flat, obj.satin.width, settings, type),
       );

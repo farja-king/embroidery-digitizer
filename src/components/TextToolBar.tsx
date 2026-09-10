@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useStore } from '../state/store';
 import { loadUploadedFont, cacheFontEntry } from '../fonts/fontLoader';
-import { orderByRecent, useTextFonts } from '../text/useTextFonts';
+import { EMBROIDERY_FONT_KEY, EMBROIDERY_FONT_LABEL, orderByRecent, useTextFonts } from '../text/useTextFonts';
 import type { FontEntry } from '../fonts/fontLoader';
 
 /** The font and size picker for the type-on-canvas text tool, sitting just to
@@ -11,12 +11,11 @@ export default function TextToolBar({ fonts, loading, canAutoLoad, loadSystemFon
   const { textFontKey, setTextFontKey, textSizeMm, setTextSizeMm, textStitchStyle, setTextStitchStyle } = useStore();
   const { recent, others } = orderByRecent(fonts);
 
-  // Pick something as soon as a list exists, so clicking the hoop always types
-  // in *some* font rather than silently doing nothing.
+  // The built-in digitized font always works, so there is nothing to wait for.
   useEffect(() => {
-    if (textFontKey || fonts.length === 0) return;
-    setTextFontKey((recent[0] ?? fonts[0]).key);
-  }, [fonts, textFontKey, recent, setTextFontKey]);
+    if (textFontKey) return;
+    setTextFontKey(EMBROIDERY_FONT_KEY);
+  }, [textFontKey, setTextFontKey]);
 
   const onUpload = async (file: File) => {
     const entry: FontEntry = await loadUploadedFont(file);
@@ -31,10 +30,9 @@ export default function TextToolBar({ fonts, loading, canAutoLoad, loadSystemFon
         className="text-toolbar-font"
         value={textFontKey}
         onChange={(e) => setTextFontKey(e.target.value)}
-        disabled={fonts.length === 0}
         title="Font"
       >
-        {fonts.length === 0 && <option value="">No fonts loaded</option>}
+        <option value={EMBROIDERY_FONT_KEY}>{EMBROIDERY_FONT_LABEL}</option>
         {recent.length > 0 && (
           <optgroup label="Recently used">
             {recent.map((f) => (

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type * as opentype from 'opentype.js';
+import { BUILT_IN_FONT } from './embroideryFont';
 import {
   getCachedFontEntries,
   getRecentFontKeys,
@@ -13,6 +14,12 @@ import {
  * silent retry on mount means a returning user never has to click "load fonts"
  * a second time; the explicit loader below covers the first-ever use, which
  * needs a real gesture. */
+/** The key that selects the built-in digitized embroidery font. It is not an
+ * outline font and has no file behind it, so it is not a FontEntry -- callers
+ * check for this key and take the embroidery path instead. */
+export const EMBROIDERY_FONT_KEY = '__embroidery__';
+export const EMBROIDERY_FONT_LABEL = `${BUILT_IN_FONT.name} — digitized`;
+
 export function useTextFonts(): {
   fonts: FontEntry[];
   loading: boolean;

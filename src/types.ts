@@ -95,6 +95,13 @@ export interface SatinParams {
   // further to go than the other. Same length as `points` when present.
   pointRailLeft?: number[];
   pointRailRight?: number[];
+  // Where each column's second rail begins, as an offset within that column's
+  // own slice of `points`. A satin column is really two edges with the needle
+  // crossing between them, and that is how a digitized font stores one: the
+  // rails are the truth and the centreline is derived, not the other way round.
+  // Keeping both rails in `points` means moving, scaling and rotating the
+  // object carries them along like any other geometry. One entry per column.
+  railSplits?: number[];
 }
 
 export interface FillParams {

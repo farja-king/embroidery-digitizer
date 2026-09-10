@@ -541,7 +541,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [tool, setTool] = useState<ToolId>('select');
   const [activeColor, setActiveColor] = useState<RGB>({ r: 237, g: 23, b: 31 });
   const [guideLineFor, setGuideLineFor] = useState<string | null>(null);
-  const [textFontKey, setTextFontKey] = useState<string>('');
+  // Defaults to the built-in digitized font: its letters come from a stitched
+  // alphabet rather than being derived from an outline, so they are right out
+  // of the box.
+  const [textFontKey, setTextFontKey] = useState<string>('__embroidery__');
   const [textSizeMm, setTextSizeMm] = useState<number>(20);
   const [textStitchStyle, setTextStitchStyle] = useState<'satin-auto' | 'fill'>('satin-auto');
 
