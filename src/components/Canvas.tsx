@@ -3,7 +3,7 @@ import { useStore, defaultObject, makeId, transformFillAnchors } from '../state/
 import { textToObjects } from '../text/textToObjects';
 import { useLoadedFont, useTextFonts } from '../text/useTextFonts';
 import TextToolBar from './TextToolBar';
-import type { EmbObject, FillParams, PathPoint, Point } from '../types';
+import type { EmbObject, FillParams, Guide, PathPoint, Point } from '../types';
 import { buildPattern, generateObjectStitches, type StitchPoint } from '../stitching/engine';
 import { distanceToPolyline, distanceToSegment, flattenPath, pointInPolygon, rotatePoint } from '../stitching/geometry';
 import { pointsForKindChange } from '../stitching/kindConvert';
@@ -63,6 +63,10 @@ interface View {
 }
 
 const RULER_PX = 18;
+// Snap radius in screen pixels, converted to mm at the current zoom -- so it
+// always feels like the same distance on screen rather than getting harder to
+// hit the further you zoom in.
+const SNAP_MM = 6;
 
 /** Limits a move so whatever is being dragged stays inside the hoop. Anything
  * outside the hoop cannot be stitched, so letting a shape be dragged off the
@@ -91,6 +95,45 @@ function clampMoveToHoop(
   if (boxes.maxY - boxes.minY <= hoopH) {
     if (boxes.minY + outY < top) outY = top - boxes.minY;
     if (boxes.maxY + outY > bottom) outY = bottom - boxes.maxY;
+  }
+  return { dx: outX, dy: outY };
+}
+
+/** Nudges a move so the thing being dragged lands exactly on a guide when it is
+ * already close to one. A guide you cannot snap to is just a drawn line; snapping
+ * is what makes it square text and objects up. Each of the box's leading edge,
+ * centre and trailing edge is a candidate, so a shape can be lined up by either
+ * side or through the middle, and the closest candidate within the threshold
+ * wins. */
+function snapToGuides(
+  box: { minX: number; minY: number; maxX: number; maxY: number },
+  dx: number,
+  dy: number,
+  guides: Guide[],
+  toleranceMm: number,
+): { dx: number; dy: number } {
+  let outX = dx;
+  let outY = dy;
+  let bestX = toleranceMm;
+  let bestY = toleranceMm;
+  for (const g of guides) {
+    if (g.axis === 'x') {
+      for (const edge of [box.minX + dx, (box.minX + box.maxX) / 2 + dx, box.maxX + dx]) {
+        const delta = g.mm - edge;
+        if (Math.abs(delta) < bestX) {
+          bestX = Math.abs(delta);
+          outX = dx + delta;
+        }
+      }
+    } else {
+      for (const edge of [box.minY + dy, (box.minY + box.maxY) / 2 + dy, box.maxY + dy]) {
+        const delta = g.mm - edge;
+        if (Math.abs(delta) < bestY) {
+          bestY = Math.abs(delta);
+          outY = dy + delta;
+        }
+      }
+    }
   }
   return { dx: outX, dy: outY };
 }
@@ -281,6 +324,7 @@ export default function Canvas() {
     | { kind: 'move-endpoint'; id: string; which: 'start' | 'end' }
     | { kind: 'rect'; corner: Point; ellipse: boolean }
     | { kind: 'marquee'; corner: Point }
+    | { kind: 'guide'; id: string; axis: 'x' | 'y'; isNew: boolean }
     | {
         kind: 'resize';
         handle: HandleDir;
@@ -541,6 +585,32 @@ export default function Canvas() {
     const py = e.clientY - rect.top;
     const p = toDesign(px, py);
 
+    // Pressing on a ruler pulls a new guide out of it, the way every design tool
+    // does. The top ruler yields a horizontal guide (a fixed y), the left one a
+    // vertical guide (a fixed x).
+    if (px < RULER_PX || py < RULER_PX) {
+      const axis: 'x' | 'y' = px < RULER_PX && py >= RULER_PX ? 'x' : 'y';
+      const id = makeId();
+      (e.target as Element).setPointerCapture(e.pointerId);
+      dispatch({ type: 'ADD_GUIDE', guide: { id, axis, mm: axis === 'x' ? p.x : p.y } });
+      dragRef.current = { kind: 'guide', id, axis, isNew: true };
+      return;
+    }
+
+    // Grabbing an existing guide -- checked before objects so a guide lying over
+    // a shape can still be picked up and moved.
+    if (tool === 'select' && !guideLineFor) {
+      const hitGuide = (doc.guides ?? []).find((g) => {
+        const screen = g.axis === 'x' ? toScreen({ x: g.mm, y: 0 }).x : toScreen({ x: 0, y: g.mm }).y;
+        return Math.abs((g.axis === 'x' ? px : py) - screen) <= 4;
+      });
+      if (hitGuide) {
+        (e.target as Element).setPointerCapture(e.pointerId);
+        dragRef.current = { kind: 'guide', id: hitGuide.id, axis: hitGuide.axis, isNew: false };
+        return;
+      }
+    }
+
     // Drawing an angle guide line takes over the canvas completely, regardless
     // of whatever the normal tool is set to -- same click-to-place-vertex
     // mechanic as running/satin/fill (left = corner, right = curve), just
@@ -727,16 +797,17 @@ export default function Canvas() {
 
     const drag = dragRef.current;
     if (!drag) return;
+
+    if (drag.kind === 'guide') {
+      dispatch({ type: 'MOVE_GUIDE', id: drag.id, mm: drag.axis === 'x' ? p.x : p.y });
+      return;
+    }
     if (drag.kind === 'pan') {
       setView((v) => ({ ...v, panX: drag.startPan.x + (px - drag.startPx.x), panY: drag.startPan.y + (py - drag.startPx.y) }));
     } else if (drag.kind === 'move-object') {
-      const { dx, dy } = clampMoveToHoop(
-        boundsOfPointLists([drag.original]),
-        p.x - drag.startMm.x,
-        p.y - drag.startMm.y,
-        doc.hoop.width,
-        doc.hoop.height,
-      );
+      const box = boundsOfPointLists([drag.original]);
+      const snapped = snapToGuides(box, p.x - drag.startMm.x, p.y - drag.startMm.y, doc.guides ?? [], SNAP_MM / view.scale);
+      const { dx, dy } = clampMoveToHoop(box, snapped.dx, snapped.dy, doc.hoop.width, doc.hoop.height);
       const translate = (pt: Point) => ({ x: pt.x + dx, y: pt.y + dy });
       const patch: Partial<EmbObject> = { points: drag.original.map((pt) => ({ ...translate(pt), type: pt.type })) };
       if (drag.originalFill) patch.fill = transformFillAnchors(drag.originalFill, translate);
@@ -781,13 +852,9 @@ export default function Canvas() {
     } else if (drag.kind === 'move-multi') {
       // One clamp for the whole selection's combined box, so a group keeps its
       // internal spacing instead of individual members piling up on the edge.
-      const { dx, dy } = clampMoveToHoop(
-        boundsOfPointLists(drag.originals.values()),
-        p.x - drag.startMm.x,
-        p.y - drag.startMm.y,
-        doc.hoop.width,
-        doc.hoop.height,
-      );
+      const box = boundsOfPointLists(drag.originals.values());
+      const snapped = snapToGuides(box, p.x - drag.startMm.x, p.y - drag.startMm.y, doc.guides ?? [], SNAP_MM / view.scale);
+      const { dx, dy } = clampMoveToHoop(box, snapped.dx, snapped.dy, doc.hoop.width, doc.hoop.height);
       const translate = (pt: Point) => ({ x: pt.x + dx, y: pt.y + dy });
       for (const id of drag.ids) {
         const original = drag.originals.get(id);
@@ -847,6 +914,22 @@ export default function Canvas() {
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
+
+    // Dropping a guide back onto a ruler, or outside the hoop entirely, throws
+    // it away -- the same gesture that created it, reversed.
+    if (drag?.kind === 'guide') {
+      const rect = canvasRef.current!.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const g = (doc.guides ?? []).find((x) => x.id === drag.id);
+      const limit = drag.axis === 'x' ? doc.hoop.width / 2 : doc.hoop.height / 2;
+      if (px < RULER_PX || py < RULER_PX || !g || Math.abs(g.mm) > limit + 2) {
+        dispatch({ type: 'REMOVE_GUIDE', id: drag.id });
+      }
+      dragRef.current = null;
+      return;
+    }
+
     // A "move-endpoint" drag only actually sets fill.startPoint/endPoint from
     // inside onPointerMove -- so a plain click with no real mouse movement
     // (grabbing a marker that's already sitting right where the user wants it,
@@ -1061,6 +1144,21 @@ export default function Canvas() {
     ctx.strokeRect(topLeft.x, topLeft.y, hw * view.scale, hh * view.scale);
 
     drawHoopGrid(ctx, toScreen, view.scale, hw, hh);
+
+    for (const g of doc.guides ?? []) {
+      const at = g.axis === 'x' ? toScreen({ x: g.mm, y: 0 }).x : toScreen({ x: 0, y: g.mm }).y;
+      ctx.strokeStyle = '#12a3c4';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (g.axis === 'x') {
+        ctx.moveTo(Math.round(at) + 0.5, RULER_PX);
+        ctx.lineTo(Math.round(at) + 0.5, h);
+      } else {
+        ctx.moveTo(RULER_PX, Math.round(at) + 0.5);
+        ctx.lineTo(w, Math.round(at) + 0.5);
+      }
+      ctx.stroke();
+    }
 
     // background template image (traced over, toggled with D)
     if (doc.background?.visible && bgImg) {

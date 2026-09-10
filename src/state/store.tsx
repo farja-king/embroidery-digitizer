@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { BackgroundImage, Document, EmbObject, FillParams, HoopSize, PathPoint, Point, RGB, StitchKind, ToolId } from '../types';
+import type { BackgroundImage, Document, EmbObject, FillParams, Guide, HoopSize, PathPoint, Point, RGB, StitchKind, ToolId } from '../types';
 import { HOOP_PRESETS, defaultTwoPassUnderlay } from '../types';
 import { flattenPath } from '../stitching/geometry';
 
@@ -77,6 +77,9 @@ type Action =
   | { type: 'GROUP_OBJECTS'; ids: string[]; groupId: string }
   | { type: 'UNGROUP_OBJECTS'; ids: string[] }
   | { type: 'CENTER_LAYOUT' }
+  | { type: 'ADD_GUIDE'; guide: Guide }
+  | { type: 'MOVE_GUIDE'; id: string; mm: number }
+  | { type: 'REMOVE_GUIDE'; id: string }
   | { type: 'SET_HOOP'; hoop: HoopSize }
   | { type: 'SET_NAME'; name: string }
   | { type: 'SET_TRIM_THRESHOLD'; mm: number }
@@ -328,6 +331,15 @@ function reducer(state: Document, action: Action): Document {
       if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) return state;
       return { ...state, objects: state.objects.map((o) => shiftObject(o, dx, dy)) };
     }
+    case 'ADD_GUIDE':
+      return { ...state, guides: [...(state.guides ?? []), action.guide] };
+    case 'MOVE_GUIDE':
+      return {
+        ...state,
+        guides: (state.guides ?? []).map((g) => (g.id === action.id ? { ...g, mm: action.mm } : g)),
+      };
+    case 'REMOVE_GUIDE':
+      return { ...state, guides: (state.guides ?? []).filter((g) => g.id !== action.id) };
     case 'SET_HOOP':
       return { ...state, hoop: action.hoop };
     case 'SET_NAME':

@@ -165,6 +165,15 @@ export interface BackgroundImage {
   visible: boolean; // toggled with the D key
 }
 
+/** A ruler guide: an infinite line at a fixed millimetre position, dragged out
+ * of the top ruler (horizontal, fixed y) or the left one (vertical, fixed x).
+ * Purely an alignment aid -- never stitched, never exported. */
+export interface Guide {
+  id: string;
+  axis: 'x' | 'y'; // 'x' = a vertical line at this x; 'y' = a horizontal line at this y
+  mm: number;
+}
+
 export interface Document {
   name: string;
   hoop: HoopSize;
@@ -174,4 +183,6 @@ export interface Document {
   // command (thread cut) instead of just traveling as a plain jump stitch. 1-10mm,
   // user-configurable (Hatch's own default is 3mm, which is this app's default too).
   trimThresholdMm: number;
+  // Optional so projects saved before guides existed still load.
+  guides?: Guide[];
 }
