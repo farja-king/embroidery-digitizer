@@ -351,6 +351,8 @@ function fillStitches(
   underlayPts: Point[],
   pullCompensation: number,
   startPoint: Point | null,
+  entryHint: Point | null,
+  exitHint: Point | null,
   endPoint: Point | null,
   bridgeMode: 'perimeter' | 'straight',
   guideLine: Point[] | null,
@@ -370,6 +372,24 @@ function fillStitches(
   // this edge. A guided fill's rows follow the guide's own bend rather than one
   // fixed angle, so there is no single direction to extend along — it keeps the
   // uniform offset.
+  // Where the thread is coming from, for deciding which end to start at. A
+  // start marker the user dragged onto the shape says it outright; otherwise
+  // the previous object's finishing point stands in. The difference matters:
+  // a marker is a place to stitch from, and is on the shape. A hint is only a
+  // direction to prefer -- it can be anywhere, including well outside, so it
+  // must never be stitched to.
+  const anchor = startPoint ?? entryHint;
+
+  // And where it should try to finish. A scanline fill's two ends are opposite
+  // corners of the row block, so choosing where to start already decides where
+  // it ends -- picking the nearest start can still leave the finish on the far
+  // side from whatever comes next. Pinning both ends is what splitFillRows is
+  // for, and it only ever ran when the user had dragged both markers on. Given
+  // somewhere the thread needs to get to next, the point on this shape nearest
+  // to it serves as the end to aim at. Only an end marker the user actually set
+  // is stitched to; this one only steers the scan.
+  const exitAnchor = endPoint ?? (exitHint ? nearestPointOn(polygon, exitHint) : null);
+
   const comp = Math.max(0, pullCompensation);
   const expanded = guideLine && guideLine.length >= 2
     ? offsetPolygon(polygon, comp)
@@ -382,7 +402,7 @@ function fillStitches(
     // instead of staying fixed. Still free to walk from either end, same as
     // a plain angle scan, so start/end alignment works the same way.
     rows = guidedFillRows(expanded, guideLine, rowSpacing, stitchLength);
-    reverseTowardTarget(rows, startPoint, endPoint);
+    reverseTowardTarget(rows, anchor, endPoint);
   } else if (!isConvexPolygon(polygon)) {
     // A non-convex outline: no single fixed scan direction can cross it
     // cleanly (see connectedRegionRows/regionChainRows), so neither
@@ -391,17 +411,44 @@ function fillStitches(
     // anchored starting as close to the start point as possible. The final
     // endpoint bridge below still reaches the actual end point regardless of
     // where the chain naturally finishes.
-    rows = regionChainRows(expanded, angle, rowSpacing, stitchLength, startPoint, step, endPoint);
-  } else if (startPoint && endPoint) {
+    rows = regionChainRows(expanded, angle, rowSpacing, stitchLength, anchor, step, exitAnchor);
+  } else if (anchor && exitAnchor) {
     // Both ends pinned down, convex outline: split the fill into two regions
     // meeting at the end point's row instead of one continuous scan bridged
     // across an unrelated gap -- see splitFillRows for the technique.
-    rows = splitFillRows(expanded, angle, rowSpacing, stitchLength, startPoint, endPoint, step);
+    rows = splitFillRows(expanded, angle, rowSpacing, stitchLength, anchor, exitAnchor, step);
+  } else if (anchor || exitAnchor) {
+    // Only somewhere to start from. Reversing the row list alone picks which
+    // end of the shape the scan begins at, but not which side of the row -- so
+    // the first stitch could still land a whole width away from the thread.
+    // Both are free choices that cover the shape identically, so try each and
+    // begin wherever is actually nearest.
+    // Both are free choices that cover the shape identically, so score all four
+    // on the travel they actually cost: how far the thread has to come to start,
+    // plus how far it will have to go afterwards to reach whatever is stitched
+    // next. Judging only the entry leaves the scan finishing on the far side of
+    // the shape from the next element, which is where the long jumps came from.
+    let best: Point[] | null = null;
+    let bestCost = Infinity;
+    for (const leftToRight of [true, false]) {
+      for (const reversed of [false, true]) {
+        const candidate = tatamiRows(expanded, angle, rowSpacing, stitchLength, undefined, undefined, leftToRight);
+        if (candidate.length === 0) continue;
+        const ordered = reversed ? [...candidate].reverse() : candidate;
+        const last = ordered[ordered.length - 1];
+        const cost =
+          (anchor ? Math.hypot(ordered[0].x - anchor.x, ordered[0].y - anchor.y) : 0) +
+          (exitAnchor ? Math.hypot(last.x - exitAnchor.x, last.y - exitAnchor.y) : 0);
+        if (cost < bestCost) {
+          bestCost = cost;
+          best = ordered;
+        }
+      }
+    }
+    rows = best ?? tatamiRows(expanded, angle, rowSpacing, stitchLength);
   } else {
     rows = tatamiRows(expanded, angle, rowSpacing, stitchLength);
-    // Only a start or only an end pinned -- both-pinned uses splitFillRows
-    // above instead, which already handles alignment on both ends itself.
-    reverseTowardTarget(rows, startPoint, endPoint);
+    reverseTowardTarget(rows, anchor, exitAnchor);
   }
   // A scan row on a concave shape (an L, a letter, a star's notch) can have more
   // than one disconnected span -- left alone, the row list jumps straight from
@@ -704,7 +751,11 @@ function railLetterStitches(obj: EmbObject, splits: number[]): StitchPoint[] {
   return out;
 }
 
-export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
+/** `entry` is where the thread already is, from the object stitched before this
+ * one. An object with no start point of its own begins near it instead of at
+ * whatever corner its scan happens to reach first, which is the difference
+ * between a short walk to the next element and a long jump the machine cuts. */
+export function generateObjectStitches(obj: EmbObject, entry?: Point | null, exit?: Point | null): StitchPoint[] {
   if (!obj.visible || obj.points.length < 2) return [];
   const flat = flattenPath(obj.points, obj.kind === 'fill');
   switch (obj.kind) {
@@ -733,7 +784,7 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
     }
     case 'fill': {
       const underlayPts = resolveUnderlay(obj, obj.fill.underlay, (settings, type) =>
-        fillUnderlay(flat, obj.fill.angle, settings, type, obj.fill.startPoint ?? null),
+        fillUnderlay(flat, obj.fill.angle, settings, type, obj.fill.startPoint ?? entry ?? null),
       );
       const guideLine = obj.fill.guideLine && obj.fill.guideLine.length >= 2 ? flattenPath(obj.fill.guideLine, false) : null;
       return fillStitches(
@@ -744,6 +795,8 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
         underlayPts,
         obj.fill.pullCompensation ?? 0,
         obj.fill.startPoint ?? null,
+        entry ?? null,
+        exit ?? null,
         obj.fill.endPoint ?? null,
         obj.fill.bridgeMode ?? 'perimeter',
         guideLine,
@@ -757,6 +810,28 @@ export function generateObjectStitches(obj: EmbObject): StitchPoint[] {
 export interface BuiltPattern {
   stitches: StitchPoint[];
   threads: { r: number; g: number; b: number }[];
+}
+
+/** Closest point on a closed outline to `p`. Used to turn "the next element is
+ * over there" into a place on this shape to aim the scan at. */
+function nearestPointOn(polygon: Point[], p: Point): Point {
+  let best = polygon[0];
+  let bestD = Infinity;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = dx * dx + dy * dy;
+    const t = len ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len)) : 0;
+    const q = { x: a.x + dx * t, y: a.y + dy * t };
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    if (d < bestD) {
+      bestD = d;
+      best = q;
+    }
+  }
+  return best;
 }
 
 const MAX_STITCH_MM = 12.1; // ~121 units of 0.1mm, the tightest ceiling among the four formats (DST/EXP)
@@ -799,8 +874,24 @@ function splitLongJump(from: Point, to: Point): Point[] {
  * whenever consecutive objects use a different thread color. */
 export function buildPattern(objects: EmbObject[], trimThresholdMm = 3): BuiltPattern {
   const visible = objects.filter((o) => o.points.length >= 2 && o.visible);
+  // Generated in order, each object told where the thread was left by the one
+  // before, so it can start near there rather than wherever its own scan
+  // begins. Without that, two shapes a couple of millimetres apart could still
+  // be 24mm apart by thread, which the machine reads as a move and cuts.
   const perObjectStitches = new Map<string, StitchPoint[]>();
-  for (const obj of visible) perObjectStitches.set(obj.id, generateObjectStitches(obj));
+  let handoff: Point | null = null;
+  for (let i = 0; i < visible.length; i++) {
+    // Where the next element sits, so this one can finish on the side facing
+    // it rather than on the far side. Its centre is enough of a direction --
+    // the exact entry point is not known until it is generated, and using its
+    // centre avoids that circularity.
+    const next = visible[i + 1];
+    const exit = next ? centroid(next.points.map((p) => ({ x: p.x, y: p.y }))) : null;
+    const st = generateObjectStitches(visible[i], handoff, exit);
+    perObjectStitches.set(visible[i].id, st);
+    const last = st[st.length - 1];
+    if (last) handoff = { x: last.x, y: last.y };
+  }
 
   // toMachinePattern later centers the whole design on its STITCH-only bounding box,
   // which becomes (0,0) in the exported file. The machine "starts" there too, so the
@@ -836,9 +927,20 @@ export function buildPattern(objects: EmbObject[], trimThresholdMm = 3): BuiltPa
       // in the exported file, not just how the canvas preview draws the scissor.
       // Never trim before the very first stitch of the whole design: nothing has
       // been sewn yet, so there's no trailing thread to cut, just a positioning jump.
-      if (started && jumpDist >= trimThresholdMm) stitches.push({ x: cursor.x, y: cursor.y, command: 'TRIM' });
-      const hops = splitLongJump(cursor, first);
-      for (const hop of hops) stitches.push({ x: hop.x, y: hop.y, command: 'JUMP' });
+      if (started && jumpDist < trimThresholdMm) {
+        // Short enough not to warrant a cut, so walk it rather than jump it. A
+        // jump leaves a loose float lying across the fabric between the two
+        // elements, held only at its ends; a walk is stitched down and is what
+        // a digitizer puts between elements that are close together. Anything
+        // at or past the trim threshold is a genuine move and still gets cut.
+        for (const p of resamplePath([cursor, first], TRAVEL_STITCH_MM).slice(1)) {
+          stitches.push({ x: p.x, y: p.y, command: 'STITCH' });
+        }
+      } else {
+        if (started) stitches.push({ x: cursor.x, y: cursor.y, command: 'TRIM' });
+        const hops = splitLongJump(cursor, first);
+        for (const hop of hops) stitches.push({ x: hop.x, y: hop.y, command: 'JUMP' });
+      }
     }
 
     for (const sp of objStitches) stitches.push(sp);
@@ -862,6 +964,11 @@ export function buildPattern(objects: EmbObject[], trimThresholdMm = 3): BuiltPa
 // Measured off a real Hatch export (3 C LOGO.DST, 12 thread runs): every lock
 // reaches ~1.2mm, with the tie-in ones running a little longer (1.7-1.9mm)
 // because they match the length of the first real stitch they lead into.
+// Stitch length for a walk between two elements that are close enough not to
+// be cut apart. Short enough to hold the thread down, long enough not to pile
+// up needle penetrations in one spot.
+const TRAVEL_STITCH_MM = 2;
+
 const LOCK_LENGTH_MM = 1.2;
 
 /** The excursion half of a lock stitch: from `anchor`, out to half the lock
