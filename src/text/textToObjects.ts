@@ -172,7 +172,13 @@ function estimateAngle(points: Point[]): number {
 export interface TextLayoutOptions {
   text: string;
   font: opentype.Font;
-  sizeMm: number; // em-square height in mm, same convention as point size but metric
+  // Height of a capital, in millimetres. Lettering size means letter height --
+  // that is what it means on a machine and in every embroidery catalogue, and
+  // it is the only figure that can be checked with a ruler. A font's own em
+  // square is roughly a third taller than its capitals, so using that as the
+  // size (the way a word processor does) silently produces letters well short
+  // of the number asked for.
+  sizeMm: number;
   x: number; // design-space mm, baseline start
   y: number; // design-space mm, baseline
   color: RGB;
@@ -191,6 +197,23 @@ export interface TextLayoutOptions {
   underlayMode?: 'auto' | 'none';
 }
 
+/** What fraction of this font's em square its capitals occupy. Taken from the
+ * font's own metrics where it declares them, and measured off a capital where
+ * it does not. */
+function capHeightRatio(font: opentype.Font): number {
+  const os2 = (font.tables as { os2?: { sCapHeight?: number } }).os2;
+  const declared = os2?.sCapHeight;
+  if (declared && declared > 0) return declared / font.unitsPerEm;
+  try {
+    const h = font.charToGlyph('H');
+    const bb = h?.getBoundingBox?.();
+    if (bb && bb.y2 > 0) return bb.y2 / font.unitsPerEm;
+  } catch {
+    // fall through to the typical ratio
+  }
+  return 0.716;
+}
+
 function applyUnderlayMode(obj: EmbObject, mode: 'auto' | 'none' | undefined): void {
   if (mode !== 'none') return; // 'auto' is defaultObject()'s own default already
   const none: UnderlaySettings = { mode: 'manual', type: 'none', spacing: 2.5 };
@@ -207,7 +230,10 @@ function applyUnderlayMode(obj: EmbObject, mode: 'auto' | 'none' | undefined): v
 export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
   const { text, font, sizeMm, x, y, color } = opts;
   const stitchStyle = opts.stitchStyle ?? 'satin-auto';
-  const scale = sizeMm / font.unitsPerEm;
+  // opentype draws at an em size, so convert the requested capital height into
+  // one using this font's own cap height.
+  const emMm = sizeMm / capHeightRatio(font);
+  const scale = emMm / font.unitsPerEm;
   const letterSpacing = opts.letterSpacingMm ?? 0;
   const glyphs = font.stringToGlyphs(text);
 
@@ -223,7 +249,7 @@ export function textToObjects(opts: TextLayoutOptions): EmbObject[] {
       const kerning = font.getKerningValue(glyphs[i - 1], glyph);
       cursorX += kerning * scale;
     }
-    const path = glyph.getPath(cursorX, y, sizeMm);
+    const path = glyph.getPath(cursorX, y, emMm);
     const islands = groupContours(pathToContours(path));
     for (const island of islands) {
       if (island.outer.length < 3) continue;

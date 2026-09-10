@@ -49,7 +49,7 @@ export default function TextToolBar({ fonts, loading, canAutoLoad, loadSystemFon
         )}
       </select>
 
-      <label className="text-toolbar-size" title="Letter height in millimetres">
+      <label className="text-toolbar-size" title="Capital letter height in millimetres — measure a capital on the finished design and it will read this">
         <input
           type="number"
           min={2}

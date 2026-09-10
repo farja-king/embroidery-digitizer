@@ -187,7 +187,7 @@ export default function TextModal({ color, onClose }: { color: RGB; onClose: () 
 
         <div className="field row">
           <label style={{ flex: 1 }}>
-            Size (mm)
+            Capital height (mm)
             <input type="number" min={2} max={300} step={0.5} value={sizeMm} onChange={(e) => setSizeMm(Number(e.target.value))} />
           </label>
         </div>
